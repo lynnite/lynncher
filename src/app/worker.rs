@@ -1,0 +1,716 @@
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use walkdir::WalkDir;
+
+use crate::backend::{
+    account_key, active_account_for_auth, apply_acz_inferred_urls, auth_mode_disabled,
+    build_content_database, derive_connect_address, download_and_install_content,
+    download_client_for_server_with_proxy_and_tokens, download_content_entries,
+    download_content_zip, download_engine_client_for_version,
+    download_engine_module_for_engine_version, download_engine_zip_for_loader,
+    ensure_loader_installed, is_connection_cancelled, launch_game_via_loader,
+    launch_game_with_context, merge_content_into, normalize_base_url, stage_sdl3_native_runtime,
+    ContentDbEntry, HubRequestOptions,
+    LauncherConfig, LauncherPaths, LoaderLaunchSpec, ServerInfo,
+};
+
+#[derive(Default)]
+pub struct FeedbackState {
+    pub status: String,
+    pub progress: Option<(f32, String)>,
+    pub logs: Vec<String>,
+    pub running: bool,
+    pub cancel: Arc<AtomicBool>,
+}
+
+pub type SharedFeedback = Arc<Mutex<FeedbackState>>;
+
+pub fn new_feedback() -> SharedFeedback {
+    Arc::new(Mutex::new(FeedbackState {
+        running: true,
+        cancel: Arc::new(AtomicBool::new(false)),
+        ..Default::default()
+    }))
+}
+
+pub struct BackgroundWork {
+    pub feedback: SharedFeedback,
+    pub thread: Option<std::thread::JoinHandle<()>>,
+}
+
+pub struct Connector {
+    pub paths: LauncherPaths,
+    pub cfg: LauncherConfig,
+    feedback: SharedFeedback,
+}
+
+impl Connector {
+    pub fn new(paths: LauncherPaths, cfg: LauncherConfig, feedback: SharedFeedback) -> Self {
+        Self { paths, cfg, feedback }
+    }
+
+    fn set_status(&self, msg: impl Into<String>) {
+        if let Ok(mut f) = self.feedback.lock() {
+            f.status = msg.into();
+        }
+    }
+
+    fn push_log(&self, msg: impl Into<String>) {
+        if let Ok(mut f) = self.feedback.lock() {
+            f.logs.push(msg.into());
+        }
+    }
+
+    fn set_progress(&self, fraction: f32, label: impl Into<String>) {
+        if let Ok(mut f) = self.feedback.lock() {
+            f.progress = Some((fraction.clamp(0.0, 1.0), label.into()));
+        }
+    }
+
+    fn clear_progress(&self) {
+        if let Ok(mut f) = self.feedback.lock() {
+            f.progress = None;
+        }
+    }
+
+    fn hub_options(&self) -> HubRequestOptions {
+        HubRequestOptions {
+            proxy_url: if self.cfg.proxy_enabled && !self.cfg.proxy_url.trim().is_empty() {
+                Some(self.cfg.proxy_url.trim().to_string())
+            } else {
+                None
+            },
+        }
+    }
+
+    fn download_auth_tokens(&self) -> Vec<Option<String>> {
+        let mut out: Vec<Option<String>> = Vec::new();
+
+        if let Some(active_key) = self.cfg.active_account_key.as_deref() {
+            if let Some(active) = self
+                .cfg
+                .accounts
+                .iter()
+                .find(|acc| account_key(&acc.auth_server, &acc.user_id) == active_key)
+            {
+                let token = active.token.trim().to_string();
+                if !token.is_empty() {
+                    out.push(Some(token));
+                }
+            }
+        }
+
+        for account in &self.cfg.accounts {
+            let token = account.token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if out
+                .iter()
+                .any(|t| t.as_deref().map(|x| x == token).unwrap_or(false))
+            {
+                continue;
+            }
+            out.push(Some(token.to_string()));
+        }
+
+        out.push(None);
+        out
+    }
+
+    fn feedback_status(&self) -> String {
+        self.feedback
+            .lock()
+            .ok()
+            .map(|f| f.status.clone())
+            .unwrap_or_default()
+    }
+
+    fn finish(&self) {
+        self.clear_progress();
+        if let Ok(mut f) = self.feedback.lock() {
+            f.running = false;
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.feedback
+            .lock()
+            .ok()
+            .map(|f| f.cancel.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    fn remove_dir(&self, dir: &Path) {
+        if dir.exists() && dir.is_dir() {
+            let _ = walkdir::WalkDir::new(dir)
+                .sort_by_file_name()
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .for_each(|e| {
+                    let _ = std::fs::remove_file(e.path());
+                });
+            let _ = std::fs::remove_dir_all(dir);
+            self.push_log(format!(
+                "Cancelled connection; removed partial download {}",
+                dir.to_string_lossy()
+            ));
+        }
+    }
+
+    pub fn connect(&self, address: &str, mut info: ServerInfo) {
+        if let Some(build) = &info.build {
+            info.build = apply_acz_inferred_urls(address, build).ok().or(info.build);
+        }
+
+        let proxy = self.hub_options().proxy_url;
+        let mut download_err: Option<anyhow::Error> = None;
+
+        let cancel_flag = self
+            .feedback
+            .lock()
+            .ok()
+            .map(|f| f.cancel.clone());
+
+        let auth_token_strings = self.download_auth_tokens();
+        let auth_tokens: Vec<Option<&str>> = auth_token_strings
+            .iter()
+            .map(|t| t.as_deref())
+            .collect();
+
+        match download_client_for_server_with_proxy_and_tokens(
+            &self.paths,
+            address,
+            &info,
+            proxy.as_deref(),
+            &auth_tokens,
+            cancel_flag.as_ref().map(Arc::as_ref),
+        ) {
+            Ok(install) => {
+                if self.is_cancelled() {
+                    self.remove_dir(&install.install_dir);
+                    self.set_status("Connection cancelled");
+                    self.push_log(self.feedback_status());
+                    self.finish();
+                    return;
+                }
+
+                self.set_status(format!(
+                    "Client downloaded to {}",
+                    install.install_dir.to_string_lossy()
+                ));
+                self.push_log(self.feedback_status());
+
+                let mut runtime_cfg = self.cfg.clone();
+                runtime_cfg.game_executable = install.executable_path.to_string_lossy().into_owned();
+
+                if let Some(exe_dir) = install.executable_path.parent() {
+                    match stage_sdl3_native_runtime(&self.paths, exe_dir, proxy.as_deref()) {
+                        Ok(()) => {
+                            self.push_log(format!(
+                                "Prepared SDL3 native runtime next to {}",
+                                exe_dir.to_string_lossy()
+                            ));
+                        }
+                        Err(err) => {
+                            self.push_log(format!(
+                                "SDL3 native staging failed, continuing with system libraries if available: {err:#}"
+                            ));
+                        }
+                    }
+                }
+
+                match launch_game_with_context(&runtime_cfg, Some(address), Some(&info)) {
+                    Ok(msg) => {
+                        self.set_status(msg);
+                        self.push_log(self.feedback_status());
+                    }
+                    Err(err) => {
+                        self.set_status(format!("Launch failed: {err:#}"));
+                        self.push_log(self.feedback_status());
+                    }
+                }
+
+                self.finish();
+                return;
+            }
+            Err(err) => {
+                download_err = Some(err);
+            }
+        }
+
+        if self.is_cancelled() {
+            self.set_status("Connection cancelled");
+            self.push_log(self.feedback_status());
+            self.finish();
+            return;
+        }
+
+        if let Some(fallback_exe) = self.resolve_fallback_executable() {
+            let mut runtime_cfg = self.cfg.clone();
+            runtime_cfg.game_executable = fallback_exe;
+
+            self.set_status("ZIP endpoints unavailable; falling back to local client executable");
+            self.push_log(self.feedback_status());
+
+            if let Some(build) = &info.build {
+                if build.manifest_download_url.is_some() || build.manifest_url.is_some() {
+                    self.push_log(
+                        "Server appears to use manifest/content protocol; using local client with build metadata",
+                    );
+                }
+            }
+
+            let has_content = Path::new(&runtime_cfg.game_executable)
+                .parent()
+                .map(Self::has_game_content)
+                .unwrap_or(false);
+
+            if !has_content {
+                self.push_log(
+                    "Local fallback client has no game content; skipping it and trying other paths.",
+                );
+            } else {
+                match launch_game_with_context(&runtime_cfg, Some(address), Some(&info)) {
+                    Ok(msg) => {
+                        self.set_status(msg);
+                        self.push_log(self.feedback_status());
+                        self.finish();
+                        return;
+                    }
+                    Err(err) => {
+                        self.set_status(format!("Fallback launch failed: {err:#}"));
+                        self.push_log(self.feedback_status());
+                    }
+                }
+            }
+        }
+
+        if self.is_cancelled() {
+            self.set_status("Connection cancelled");
+            self.push_log(self.feedback_status());
+            self.finish();
+            return;
+        }
+
+        if let Some(build) = &info.build {
+            if let Some(engine_version) = build.engine_version.as_deref() {
+                match self.try_launch_via_loader(address, &info, engine_version) {
+                    Ok(true) => {
+                        self.set_status("Launched client through SS14.Loader");
+                        self.push_log(self.feedback_status());
+                        self.finish();
+                        return;
+                    }
+                    Ok(false) => {
+                        self.push_log(
+                            "Server has no manifest content; falling back to merged-engine launch.",
+                        );
+                    }
+                    Err(err) => {
+                        self.push_log(format!(
+                            "SS14.Loader launch failed; falling back to merged-engine path: {err:#}"
+                        ));
+                    }
+                }
+
+                self.engine_fallback(address, &info, engine_version);
+                self.finish();
+                return;
+            }
+        }
+
+        if let Some(err) = download_err {
+            if is_connection_cancelled(&err) {
+                self.set_status("Connection cancelled");
+            } else {
+                self.set_status(format!("Client download failed: {err:#}"));
+            }
+            self.push_log(self.feedback_status());
+        } else {
+            self.set_status("Client download failed: no attempts executed");
+            self.push_log(self.feedback_status());
+        }
+
+        self.finish();
+    }
+
+    fn engine_fallback(&self, address: &str, info: &ServerInfo, engine_version: &str) {
+        if self.is_cancelled() {
+            self.set_status("Connection cancelled");
+            self.push_log(self.feedback_status());
+            return;
+        }
+
+        let proxy = self.hub_options().proxy_url;
+
+        match download_engine_client_for_version(&self.paths, engine_version, proxy.as_deref()) {
+            Ok(engine_exe) => {
+                if let Ok(module_dir) = download_engine_module_for_engine_version(
+                    &self.paths,
+                    "Robust.Client.WebView",
+                    engine_version,
+                    proxy.as_deref(),
+                ) {
+                    let module_dir = module_dir.to_string_lossy().to_string();
+                    std::env::set_var("ROBUST_MODULE_ROBUST_CLIENT_WEBVIEW", &module_dir);
+                    std::env::set_var("ROBUST_MODULE_SPACEWIZARDS_SDL", &module_dir);
+                    self.push_log(format!("Prepared native module fallback at {}", module_dir));
+                }
+
+                let mut runtime_cfg = self.cfg.clone();
+                runtime_cfg.game_executable = engine_exe.to_string_lossy().into_owned();
+                self.set_status(format!(
+                    "Downloaded engine {} as fallback client",
+                    engine_version
+                ));
+                self.push_log(self.feedback_status());
+
+                let mut content_downloaded = false;
+                if let Some(build) = &info.build {
+                    let manifest_result =
+                        download_and_install_content(&self.paths, address, build, proxy.as_deref());
+
+                    match manifest_result {
+                        Ok(Some(content_dir)) => {
+                            if let Some(engine_dir) = engine_exe.parent() {
+                                match merge_content_into(&content_dir, engine_dir) {
+                                    Ok(()) => {
+                                        content_downloaded = true;
+                                        self.push_log(format!(
+                                            "Installed game content from manifest into {}",
+                                            engine_dir.to_string_lossy()
+                                        ));
+                                    }
+                                    Err(err) => {
+                                        self.push_log(format!(
+                                            "Failed to merge manifest content into engine dir: {err:#}"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            self.push_log(
+                                "Server has no complete manifest download; trying content ZIP.",
+                            );
+                            match download_content_zip(
+                                &self.paths,
+                                address,
+                                build,
+                                proxy.as_deref(),
+                            ) {
+                                Ok(Some(content_dir)) => {
+                                    if let Some(engine_dir) = engine_exe.parent() {
+                                        match merge_content_into(&content_dir, engine_dir) {
+                                            Ok(()) => {
+                                                content_downloaded = true;
+                                                self.push_log(format!(
+                                                    "Installed game content from ZIP into {}",
+                                                    engine_dir.to_string_lossy()
+                                                ));
+                                            }
+                                            Err(err) => {
+                                                self.push_log(format!(
+                                                    "Failed to merge ZIP content into engine dir: {err:#}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    self.push_log(
+                                        "Server provides neither a manifest download nor a content ZIP URL.",
+                                    );
+                                }
+                                Err(err) => {
+                                    self.push_log(format!(
+                                        "Game content ZIP download failed: {err:#}"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            self.push_log(format!(
+                                "Game content manifest download failed: {err:#}"
+                            ));
+                        }
+                    }
+                }
+
+                let has_content = if content_downloaded {
+                    true
+                } else {
+                    engine_exe.parent().map(Self::has_game_content).unwrap_or(false)
+                };
+
+                if !has_content {
+                    self.set_status(
+                        "Engine fallback client has no game content installed; \
+                         cannot launch (bare Robust engine cannot boot to the game). \
+                         If the server uses the manifest/content-download protocol, \
+                         the content download failed. Check the log above.",
+                    );
+                    self.push_log(self.feedback_status());
+                    return;
+                }
+
+                self.push_log(if content_downloaded {
+                    String::from("Game content present; launching client.")
+                } else {
+                    String::from("Game content present (no manifest required); launching client.")
+                });
+
+                match launch_game_with_context(&runtime_cfg, Some(address), Some(&info)) {
+                    Ok(msg) => {
+                        self.set_status(msg);
+                        self.push_log(self.feedback_status());
+                    }
+                    Err(err) => {
+                        self.set_status(format!("Engine fallback launch failed: {err:#}"));
+                        self.push_log(self.feedback_status());
+                    }
+                }
+            }
+            Err(err) => {
+                self.push_log(format!(
+                    "Engine fallback download failed for {}: {err:#}",
+                    engine_version
+                ));
+            }
+        }
+    }
+
+    fn try_launch_via_loader(
+        &self,
+        address: &str,
+        info: &ServerInfo,
+        engine_version: &str,
+    ) -> anyhow::Result<bool> {
+        if self.is_cancelled() {
+            self.set_status("Connection cancelled");
+            self.push_log(self.feedback_status());
+            return Ok(false);
+        }
+
+        let proxy = self.hub_options().proxy_url;
+
+        self.set_progress(0.1, "Acquiring SS14.Loader...");
+        let loader = ensure_loader_installed(&self.paths, proxy.as_deref())?;
+
+        self.set_progress(0.3, "Downloading Robust engine...");
+        let (engine_zip, signature) =
+            download_engine_zip_for_loader(&self.paths, engine_version, proxy.as_deref())?;
+
+        let mut modules = Vec::new();
+        if let Ok(module_dir) = download_engine_module_for_engine_version(
+            &self.paths,
+            "Robust.Client.WebView",
+            engine_version,
+            proxy.as_deref(),
+        ) {
+            modules.push(("Robust.Client.WebView".to_string(), module_dir.clone()));
+            modules.push(("SpaceWizards.Sdl".to_string(), module_dir));
+        }
+
+        let content_db_path = self.paths.clients_dir.join("content.db");
+        let mut content_db = content_db_path.clone();
+        let mut content_version_id: i64 = 0;
+        let mut have_content = false;
+
+        if let Some(build) = &info.build {
+            self.set_progress(0.5, "Downloading game content...");
+            match download_content_entries(&self.paths, address, build, proxy.as_deref()) {
+                Ok(Some((cache_dir, files, manifest_hash))) => {
+                    self.set_progress(0.75, "Building content database...");
+                    let entries: Vec<ContentDbEntry> = files
+                        .into_iter()
+                        .map(|f| ContentDbEntry {
+                            path: f.path,
+                            hash_hex: f.hash_hex,
+                        })
+                        .collect();
+                    let db = build_content_database(
+                        &content_db_path,
+                        &cache_dir,
+                        &entries,
+                        &manifest_hash,
+                        build.fork_id.as_deref(),
+                        build.version.as_deref(),
+                        engine_version,
+                    )?;
+                    content_db = db.path;
+                    content_version_id = db.version_id;
+                    have_content = true;
+                }
+                Ok(None) => {
+                    return Ok(false);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        if !have_content {
+            return Ok(false);
+        }
+
+        self.set_progress(0.9, "Launching client...");
+
+        self.push_log(format!(
+            "Launching SS14.Loader for engine_version={engine_version} (signature={})",
+            if signature.is_empty() { "none" } else { "present" },
+        ));
+
+        let mut build_cvars = Vec::new();
+        if let Some(build) = &info.build {
+            for (key, value) in [
+                ("download_url", build.download_url.as_deref()),
+                ("manifest_url", build.manifest_url.as_deref()),
+                ("manifest_download_url", build.manifest_download_url.as_deref()),
+                ("version", build.version.as_deref()),
+                ("fork_id", build.fork_id.as_deref()),
+                ("hash", build.hash.as_deref()),
+                ("manifest_hash", build.manifest_hash.as_deref()),
+                ("engine_version", build.engine_version.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        build_cvars.push((key.to_string(), trimmed.to_string()));
+                    }
+                }
+            }
+        }
+
+        let connect_uri =
+            derive_connect_address(address, info).unwrap_or_else(|_| address.to_string());
+
+        let mut auth_token = None;
+        let mut auth_userid = None;
+        let mut auth_server = None;
+        let mut auth_pubkey = None;
+        let mut username = None;
+        let disable_signing = signature.is_empty();
+        if let Some(account) = active_account_for_auth(&self.cfg, &self.cfg.auth_server_url) {
+            if !auth_mode_disabled(&info.auth) {
+                username = Some(account.username.trim().to_string());
+                auth_token = Some(account.token.trim().to_string());
+                auth_userid = Some(account.user_id.trim().to_string());
+                auth_server = Some(normalize_base_url(&account.auth_server));
+                if let Some(pk) = &info.auth.public_key {
+                    if !pk.trim().is_empty() {
+                        auth_pubkey = Some(pk.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        let spec = LoaderLaunchSpec {
+            engine_zip,
+            engine_signature: signature,
+            signing_key: loader.signing_key,
+            loader_exe: loader.loader_exe,
+            content_db,
+            content_version_id,
+            overlay_zip: None,
+            modules,
+            connect_uri: Some(connect_uri),
+            connect_ss14_address: Some(address.to_string()),
+            build_cvars,
+            username,
+            compat_mode: false,
+            extra_args: Vec::new(),
+            auth_token,
+            auth_userid,
+            auth_server,
+            auth_pubkey,
+            disable_signing,
+        };
+
+        let mut child = match launch_game_via_loader(&spec) {
+            Ok(child) => child,
+            Err(err) => return Err(err),
+        };
+
+        loop {
+            let _ = child.wait();
+            self.clear_progress();
+            if self.is_cancelled() || !self.cfg.auto_reconnect {
+                break;
+            }
+            let delay_ms = self.cfg.auto_reconnect_delay_ms;
+            self.set_status(format!("Disconnected; reconnecting in {delay_ms} ms"));
+            self.push_log(self.feedback_status());
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            if self.is_cancelled() {
+                break;
+            }
+            match launch_game_via_loader(&spec) {
+                Ok(new_child) => {
+                    child = new_child;
+                    self.set_status("Reconnecting...");
+                    self.push_log(self.feedback_status());
+                }
+                Err(err) => {
+                    self.push_log(format!("Reconnect launch failed: {err:#}"));
+                    break;
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
+    fn resolve_fallback_executable(&self) -> Option<String> {
+        let configured = self.cfg.game_executable.trim();
+        if !configured.is_empty() && Path::new(configured).exists() {
+            return Some(configured.to_string());
+        }
+        Self::find_newest_cached_client_executable(&self.paths.clients_dir)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn has_game_content(exe_dir: &Path) -> bool {
+        const CONTENT_MARKERS: [&str; 3] = ["SS14.Loader", "Content.Client.dll", "content.ftl"];
+        for name in CONTENT_MARKERS {
+            if exe_dir.join(name).exists() {
+                return true;
+            }
+        }
+        if exe_dir.join("Resources").join("Content").is_dir() {
+            return true;
+        }
+        false
+    }
+
+    fn find_newest_cached_client_executable(clients_dir: &Path) -> Option<std::path::PathBuf> {
+        let candidates = [
+            "Robust.Client.dll",
+            "Robust.Client",
+            "Robust.Client.exe",
+        ];
+        let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
+        for entry in WalkDir::new(clients_dir).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy();
+            if !candidates.iter().any(|c| file_name.eq_ignore_ascii_case(c)) {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            match &best {
+                Some((best_time, _)) if modified <= *best_time => {}
+                _ => best = Some((modified, entry.path().to_path_buf())),
+            }
+        }
+        best.map(|(_, p)| p)
+    }
+}

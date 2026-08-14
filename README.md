@@ -1,2 +1,76 @@
-# lynncher
-a work in progress SS14 launcher
+# The first ss14 launcher written in rust
+
+A cross-platform launcher for Space Station 14 written in Rust. It builds and runs natively on Linux, Windows and macOS.
+
+## Current features
+
+- Fully customizable UI, change color scheming, select an image for the backround
+- Multiaccount
+- Proxy for launcher traffic
+- Basic event log and visible data paths
+- Choose your hub server. default `https://hub.playss14.com/`
+- Choose your auth server. default `https://auth.playss14.com/`
+- Sideload content bundles (has not been tested yet so be careful)
+- Auto-reconnect to last server disconnected setting
+- Privacy changes
+- Opt-in automatic updates
+- Edgy logo
+- Rust
+
+## How to install
+
+### Linux
+
+Clone the repository or download a release from releases
+
+    git clone https://github.com/lynnite/lynncher.git
+    cd lynncher
+    ./run-linux.sh
+
+The script will:
+
+1. Check if `cargo` and `rustc` are installed.
+2. Install Rust via `rustup` if they are missing.
+3. Detect and install the required X11/Wayland/OpenGL runtime libraries
+   using your package manager (`apt`, `dnf`, `pacman` or `zypper`).
+4. Build the launcher with `cargo build --release`.
+5. Launch the program.
+
+If the script is not executable yet:
+
+    chmod +x run-linux.sh
+
+### Windows
+
+Clone the repository or download a release from releases
+
+    git clone https://github.com/lynnite/lynncher.git
+    cd lynncher
+    run-windows.bat
+
+The script will:
+
+1. Check if `cargo` and `rustc` are installed.
+2. Install Rust via `rustup` if they are missing (using `winget` first,
+   falling back to downloading `rustup-init.exe`).
+3. Build the launcher with `cargo build --release`.
+4. Launch the program.
+
+### Manual build
+
+If you already have Rust installed and want to build manually:
+
+    cargo build --release
+    ./target/release/ss14-launcher-rust        # Linux / macOS
+    # or
+    .\target\release\ss14-launcher-rust.exe    # Windows
+
+## Privacy
+
+The launcher only contacts external services you explicitly use:
+
+- The hub/auth servers you configure (e.g. `hub.playss14.com`) when you
+  browse or connect to servers.
+- GitHub's release API, only when you click **Check for updates**
+  in the **Options** > **Updates** section. The launcher never contacts
+  GitHub on startup or without your action.
