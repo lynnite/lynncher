@@ -19,6 +19,28 @@ A cross-platform launcher for Space Station 14 written in Rust. It builds and ru
 
 ## How to install
 
+### Windows
+
+Go to [releases](https://github.com/lynnite/lynncher/releases)
+
+Download the .exe and run it
+
+### Linux (Debian/Ubuntu based)
+
+Go to [releases](https://github.com/lynnite/lynncher/releases)
+
+Download the .deb, use a software manager to execute it,
+
+Or install with apt:
+
+    sudo apt install ./lynncher-linux-x86_64.deb 
+
+Install with dpkg
+    
+    sudo dpkg -i lynncher-linux-x86_64.deb 
+
+## How to install dev/alternative to the packages if theres none for your OS
+
 ### Linux
 
 Clone the repository or download a release from releases
