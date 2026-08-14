@@ -65,6 +65,41 @@ If you already have Rust installed and want to build manually:
     # or
     .\target\release\ss14-launcher-rust.exe    # Windows
 
+## Building a distributable package
+
+### Linux (.deb)
+
+To build a Debian/Ubuntu `.deb` package, you need `dpkg-deb` (usually
+provided by the `dpkg-dev` package):
+
+    sudo apt install dpkg-dev
+    ./build-linux.sh
+
+This produces `target/lynncher-<version>_amd64.deb` and copies it to
+`lynncher-linux-x86_64.deb` locally. The package installs the launcher to
+`/usr/bin/lynncher` together with a desktop entry and icon.
+
+### Linux (.rpm)
+
+To build an RPM package for Fedora/RHEL-based systems, you need `rpmbuild`
+(provided by the `rpm-build` package):
+
+    sudo dnf install rpm-build
+    ./build-rpm.sh
+
+This uses the spec file in `packaging/lynncher.spec.template`, produces the
+`.rpm` under `~/rpmbuild/RPMS/`, and copies it to
+`lynncher-linux-x86_64.rpm` locally.
+
+### Windows (.exe)
+
+Build on a Windows machine with Rust installed:
+
+    build-windows.bat
+
+This produces `target\release\ss14-launcher-rust.exe` and copies it to
+`lynncher-windows-x86_64.exe` locally.
+
 ## Privacy
 
 The launcher only contacts external services you explicitly use:
@@ -73,4 +108,4 @@ The launcher only contacts external services you explicitly use:
   browse or connect to servers.
 - GitHub's release API, only when you click **Check for updates**
   in the **Options** > **Updates** section. The launcher never contacts
-  GitHub on startup or without your action.
+  GitHub on startup or without your action, unless you specifically enabled this in the options.

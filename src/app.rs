@@ -41,7 +41,12 @@ pub struct LauncherApp {
     progress: Option<ProgressState>,
     background: Option<worker::BackgroundWork>,
     favorite_name_inputs: std::collections::HashMap<String, String>,
+    favorite_infos: std::collections::HashMap<String, ServerInfo>,
     update_check: std::sync::Arc<std::sync::Mutex<UpdateCheckState>>,
+    update_action_result: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    last_config_save: Option<std::time::Instant>,
+    last_saved_config: Option<String>,
+    auto_update_initiated: bool,
 }
 
 #[derive(Default, Clone)]
@@ -131,7 +136,12 @@ impl LauncherApp {
             progress: None,
             background: None,
             favorite_name_inputs: std::collections::HashMap::new(),
+            favorite_infos: std::collections::HashMap::new(),
             update_check: std::sync::Arc::new(std::sync::Mutex::new(UpdateCheckState::default())),
+            update_action_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            last_config_save: None,
+            last_saved_config: None,
+            auto_update_initiated: false,
         }
     }
 
@@ -218,8 +228,13 @@ impl eframe::App for LauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_flat_style(ctx);
         self.poll_background();
+        self.poll_update_action();
+        self.run_auto_update();
+        self.save_config_if_dirty();
 
         self.draw_header_panel(ctx);
+
+        self.draw_hub_search_bar(ctx);
 
         self.sync_background(ctx);
 

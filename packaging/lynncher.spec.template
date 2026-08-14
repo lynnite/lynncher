@@ -1,0 +1,46 @@
+Name:       lynncher
+Version:    @VERSION@
+Release:    1%{?dist}
+Summary:    The first SS14 launcher written in Rust
+License:    MIT
+URL:        https://github.com/lynnite/lynncher
+Source0:    %{name}-%{version}.tar.gz
+BuildArch:  x86_64
+
+Requires:   libX11
+Requires:   libxkbcommon
+Requires:   libxkbcommon-x11
+Requires:   libxcb
+Requires:   libXcursor
+Requires:   libXrandr
+Requires:   libXi
+Requires:   libGL
+Requires:   libXext
+Requires:   libwayland-client
+Requires:   alsa-lib
+
+%description
+A cross-platform launcher for Space Station 14 written in Rust.
+
+%prep
+
+%build
+
+%install
+install -D -m 0755 "$OLDPWD/target/release/ss14-launcher-rust" %{buildroot}%{_bindir}/lynncher
+install -D -m 0644 "$OLDPWD/packaging/usr/share/applications/lynncher.desktop" %{buildroot}%{_datadir}/applications/lynncher.desktop
+install -D -m 0644 "$OLDPWD/logo.png" %{buildroot}%{_datadir}/pixmaps/lynncher.png
+
+%files
+%{_bindir}/lynncher
+%{_datadir}/applications/lynncher.desktop
+%{_datadir}/pixmaps/lynncher.png
+
+%post
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database %{_datadir}/applications &>/dev/null || true
+fi
+
+%changelog
+* Mon Jan 01 2024 lynnite <lynnite@example.com> - @VERSION@-1
+- Initial packaging.

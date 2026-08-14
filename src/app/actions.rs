@@ -4,13 +4,14 @@ use std::time::SystemTime;
 use walkdir::WalkDir;
 
 use crate::backend::{
-    account_key, apply_acz_inferred_urls, check_latest_release, download_and_install_content,
-    download_client_for_server_with_proxy_and_tokens, download_content_zip,
-    download_engine_client_for_version, download_engine_module_for_engine_version,
+    account_key, apply_acz_inferred_urls, check_latest_release, download_and_apply_update,
+    download_and_install_content, download_client_for_server_with_proxy_and_tokens,
+    download_content_zip, download_engine_client_for_version,
+    download_engine_module_for_engine_version,
     fetch_hub_servers_with_options, fetch_server_info_direct_with_proxy,
     fetch_server_info_from_hub_with_options, is_newer_tag, latest_release_url,
-    launch_game_with_context, merge_content_into, normalize_base_url, stage_sdl3_native_runtime,
-    HubRequestOptions, ServerInfo,
+    launch_game_with_context, merge_content_into, normalize_base_url, save_config,
+    stage_sdl3_native_runtime, HubRequestOptions, ServerInfo,
 };
 
 use super::LauncherApp;
@@ -161,20 +162,41 @@ impl LauncherApp {
         });
     }
 
-    pub(crate) fn start_update(&mut self, ctx: &egui::Context) {
-        let url = self
-            .update_check
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .url
-            .clone()
-            .unwrap_or_else(|| String::from("https://github.com/lynnite/lynncher/releases/latest"));
-        ctx.open_url(egui::output::OpenUrl {
-            url,
-            new_tab: true,
-        });
-        self.status = String::from("Opening the latest release page to update the launcher");
+    pub(crate) fn start_update(&mut self) {
+        let proxy = self
+            .cfg
+            .proxy_enabled
+            .then(|| self.cfg.proxy_url.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        self.status = String::from("Downloading the compiled update for this OS...");
         self.push_log(self.status.clone());
+
+        let result = self.update_action_result.clone();
+        let proxy_clone = proxy;
+
+        std::thread::spawn(move || {
+            let msg = match download_and_apply_update(proxy_clone.as_deref()) {
+                Ok(()) => {
+                    String::from("Launcher updated successfully. Restart the launcher.")
+                }
+                Err(err) => format!("Launcher update failed: {err:#}"),
+            };
+            if let Ok(mut r) = result.lock() {
+                *r = Some(msg);
+            }
+        });
+    }
+
+    pub(crate) fn poll_update_action(&mut self) {
+        let msg = {
+            let mut r = self.update_action_result.lock().unwrap_or_else(|e| e.into_inner());
+            r.take()
+        };
+        if let Some(msg) = msg {
+            self.status = msg.clone();
+            self.push_log(msg);
+        }
     }
 
     pub(crate) fn update_available(&self) -> Option<bool> {
@@ -768,6 +790,55 @@ fn find_newest_cached_client_executable(clients_dir: &Path) -> Option<std::path:
         }
     }
 
+    pub(crate) fn ensure_favorite_infos(&mut self) {
+        if self.cfg.favorite_servers.is_empty() {
+            return;
+        }
+        let options = self.hub_options();
+        for address in self.cfg.favorite_servers.clone() {
+            if self.favorite_infos.contains_key(&address) {
+                continue;
+            }
+            let info = fetch_server_info_from_hub_with_options(
+                &self.cfg.hub_server_url,
+                &address,
+                options.clone(),
+            )
+            .or_else(|_| fetch_server_info_direct_with_proxy(&address, options.proxy_url.as_deref()));
+            if let Ok(info) = info {
+                self.favorite_infos.insert(address.clone(), info);
+            }
+        }
+    }
+
+    pub(crate) fn favorite_summary(&self, address: &str) -> (String, String) {
+        let custom = self.favorite_display_name(address);
+        let custom_is_addr = custom.eq_ignore_ascii_case(address);
+
+        let hub_name = self
+            .servers
+            .iter()
+            .find(|s| s.address.eq_ignore_ascii_case(address))
+            .and_then(|s| s.status_data.name.as_deref())
+            .filter(|n| !n.trim().is_empty());
+
+        let name = if !custom_is_addr {
+            custom
+        } else if let Some(n) = hub_name {
+            n.to_string()
+        } else {
+            address.to_string()
+        };
+
+        let desc = self
+            .favorite_infos
+            .get(address)
+            .and_then(|i| i.desc.clone())
+            .unwrap_or_default();
+
+        (name, desc)
+    }
+
     pub(crate) fn clear_installed_engines(&mut self) {
         let clients = &self.paths.clients_dir;
         let mut removed = 0usize;
@@ -806,5 +877,49 @@ fn find_newest_cached_client_executable(clients_dir: &Path) -> Option<std::path:
         let _ = std::fs::remove_file(clients.join("content.db"));
         self.status = format!("Cleared installed server content ({removed} items)");
         self.push_log(self.status.clone());
+    }
+
+    pub(crate) fn save_config_if_dirty(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_config_save {
+            if now.duration_since(last) < std::time::Duration::from_millis(1500) {
+                return;
+            }
+        }
+        let Ok(serialized) = toml::to_string_pretty(&self.cfg) else {
+            self.last_config_save = Some(now);
+            return;
+        };
+        if self.last_saved_config.as_deref() == Some(serialized.as_str()) {
+            self.last_config_save = Some(now);
+            return;
+        }
+        if save_config(&self.paths, &self.cfg).is_ok() {
+            self.last_saved_config = Some(serialized);
+        }
+        self.last_config_save = Some(now);
+    }
+
+    pub(crate) fn run_auto_update(&mut self) {
+        if !self.cfg.auto_update || self.auto_update_initiated {
+            return;
+        }
+
+        {
+            let state = self.update_check.lock().unwrap_or_else(|e| e.into_inner());
+            if !state.done {
+                if !state.checking {
+                    drop(state);
+                    self.start_update_check();
+                }
+                return;
+            }
+        }
+
+        self.auto_update_initiated = true;
+        if self.update_available() == Some(true) {
+            self.push_log("Automatic update available; downloading at startup.");
+            self.start_update();
+        }
     }
 }

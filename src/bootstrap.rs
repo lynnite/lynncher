@@ -4,7 +4,7 @@ pub fn run(initial_uri: Option<String>) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SS14 Lynncher")
-            .with_inner_size([650.0, 400.0])
+            .with_inner_size([800.0, 500.0])
             .with_min_inner_size([800.0, 500.0]),
         ..Default::default()
     };
