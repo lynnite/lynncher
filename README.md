@@ -21,13 +21,13 @@ A cross-platform launcher for Space Station 14 written in Rust. It builds and ru
 
 ### Windows
 
-Go to [releases](https://github.com/lynnite/lynncher/releases) and dowload the latest version (preferably)
+Go to [releases](https://github.com/lynnite/lynncher/releases)
 
 Download the .exe and run it
 
 ### Linux (Debian/Ubuntu based)
 
-Go to [releases](https://github.com/lynnite/lynncher/releases) and dowload the latest version (preferably)
+Go to [releases](https://github.com/lynnite/lynncher/releases)
 
 Download the .deb, use a software manager to execute it,
 
