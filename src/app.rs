@@ -7,10 +7,17 @@ mod panels;
 mod worker;
 
 use crate::backend::{
-    ensure_dirs, launcher_paths, load_config, list_sideloaded_extensions, HubServerEntry,
-    LauncherConfig, LauncherPaths, ServerInfo, DEFAULT_AUTH_SERVER,
+    cleanup_stale_update, ensure_dirs, launcher_paths, load_config, list_sideloaded_extensions,
+    HubServerEntry, LauncherConfig, LauncherPaths, ServerInfo, DEFAULT_AUTH_SERVER,
     DEFAULT_HUB_SERVER,
 };
+
+/// Launcher version string shown in the UI and used for update checks.
+///
+/// To change the launcher's version, edit this single constant. It defaults
+/// to the Cargo package version, so you can also just bump `version` in
+/// `Cargo.toml`; either way there's one obvious place to look.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct LauncherApp {
     paths: LauncherPaths,
@@ -74,6 +81,8 @@ enum AppPage {
 impl LauncherApp {
     pub fn new(initial_uri: Option<String>) -> Self {
         let paths = launcher_paths();
+
+        cleanup_stale_update();
 
         let mut logs = Vec::new();
         let mut status = String::from("Ready");
@@ -375,7 +384,7 @@ impl LauncherApp {
                             self.open_direct_connect_modal();
                         }
                         ui.label(
-                            egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                            egui::RichText::new(format!("v{APP_VERSION}"))
                                 .weak()
                                 .small(),
                         );
@@ -459,16 +468,46 @@ fn load_background_texture(ctx: &egui::Context, path: &str) -> Option<egui::Text
 }
 
 fn load_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
-    let mut paths: Vec<std::path::PathBuf> = vec!["logo.png".into()];
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+
+    let names = ["logo.png", "lynncher.png"];
+
+    for name in names {
+        paths.push(name.into());
+    }
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            paths.push(dir.join("logo.png"));
+            for name in names {
+                paths.push(dir.join(name));
+            }
             paths.push(dir.join("../../logo.png"));
+            paths.push(dir.join("../../lynncher.png"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        for name in names {
+            paths.push(std::path::PathBuf::from("/usr/share/pixmaps").join(name));
+            paths.push(std::path::PathBuf::from("/usr/share/icons/hicolor/256x256/apps").join(name));
+            paths.push(std::path::PathBuf::from("/usr/share/icons/hicolor/128x128/apps").join(name));
+            paths.push(std::path::PathBuf::from("/usr/share/icons/hicolor/64x64/apps").join(name));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for name in names {
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    paths.push(dir.join(name));
+                }
+            }
         }
     }
 
     for p in &paths {
-        if !p.exists() {
+        if !p.exists() || !p.is_file() {
             continue;
         }
         let Ok(img) = image::open(p) else {

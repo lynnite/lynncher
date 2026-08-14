@@ -89,21 +89,16 @@ fn fetch_latest_release(proxy_url: Option<&str>) -> Result<GithubRelease> {
     response.json().context("parsing GitHub release")
 }
 
-/// Fetch the URL of the latest release page on GitHub.
 pub fn latest_release_url(proxy_url: Option<&str>) -> Result<Option<String>> {
     let release = fetch_latest_release(proxy_url)?;
     Ok(release.html_url)
 }
 
-/// Query the latest release tag from the lynncher GitHub repo.
-/// Returns `None` when no tag could be determined.
 pub fn check_latest_release(proxy_url: Option<&str>) -> Result<Option<String>> {
     let release = fetch_latest_release(proxy_url)?;
     Ok(release.tag_name.or(release.name))
 }
 
-/// Compare a GitHub release tag against the built-in version.
-/// Returns `true` if the tag represents a newer release.
 pub fn is_newer_tag(tag: &str, current: &str) -> bool {
     let tag = tag.trim().trim_start_matches('v');
     let current = current.trim().trim_start_matches('v');
@@ -171,7 +166,14 @@ fn apply_downloaded_artifact(path: &Path) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         let current = std::env::current_exe().context("locating running executable")?;
-        let staged = current.with_extension("exe.new");
+        let current_dir = current
+            .parent()
+            .map(|p| p.to_path_buf())
+            .context("locating executable directory")?;
+
+        let staged = current_dir.join("lynncher-update-staged.exe");
+        let old = current_dir.join("lynncher-update-old.exe");
+
         fs::copy(path, &staged).context("staging new executable")?;
 
         if fs::copy(&staged, &current).is_ok() {
@@ -179,10 +181,17 @@ fn apply_downloaded_artifact(path: &Path) -> Result<()> {
             return Ok(());
         }
 
+        let _ = fs::remove_file(&old);
+        fs::rename(&current, &old).context("moving running executable aside")?;
+        if let Err(err) = fs::copy(&staged, &current) {
+            fs::rename(&old, &current).ok();
+            anyhow::bail!("failed to install update: {err:#}");
+        }
+        let _ = fs::remove_file(&staged);
+
         anyhow::bail!(
-            "download complete; replace {} with {} after closing the launcher",
-            current.display(),
-            staged.display()
+            "the new version is staged in place. Please exit and relaunch {} to run it.",
+            current.display()
         );
     }
 
@@ -200,35 +209,11 @@ fn apply_downloaded_artifact(path: &Path) -> Result<()> {
             .unwrap_or(false);
 
         if is_deb {
-            let status = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("exec sudo dpkg -i '{}'", artifact_path.display()))
-                .status()
-                .context("running dpkg to install the updated package")?;
-
-            if !status.success() {
-                anyhow::bail!(
-                    "dpkg install failed. Install manually with: sudo dpkg -i {}",
-                    artifact_path.display()
-                );
-            }
-            return Ok(());
+            return install_linux_package(&artifact_path, &["dpkg", "-i"]);
         }
 
         if is_rpm {
-            let status = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("exec sudo rpm -Uvh '{}'", artifact_path.display()))
-                .status()
-                .context("running rpm to install the updated package")?;
-
-            if !status.success() {
-                anyhow::bail!(
-                    "rpm install failed. Install manually with: sudo rpm -Uvh {}",
-                    artifact_path.display()
-                );
-            }
-            return Ok(());
+            return install_linux_package(&artifact_path, &["rpm", "-Uvh"]);
         }
 
         anyhow::bail!(
@@ -240,5 +225,55 @@ fn apply_downloaded_artifact(path: &Path) -> Result<()> {
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         anyhow::bail!("automatic update is not supported on this platform")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_package(package: &Path, args: &[&str]) -> Result<()> {
+    let package_str = package.display().to_string();
+    let installer = args[0];
+    let installer_flag = args[1];
+
+    let variants: [&[&str]; 4] = [
+        &["pkexec", installer, installer_flag, package_str.as_str()],
+        &["gksudo", installer, installer_flag, package_str.as_str()],
+        &["kdesudo", installer, installer_flag, package_str.as_str()],
+        &["sudo", installer, installer_flag, package_str.as_str()],
+    ];
+
+    for variant in variants {
+        let prog = variant[0];
+        if !command_exists(prog) {
+            continue;
+        }
+        let status = std::process::Command::new(prog)
+            .args(&variant[1..])
+            .status();
+        if let Ok(s) = status {
+            if s.success() {
+                return Ok(());
+            }
+            let cmdline = variant.join(" ");
+            anyhow::bail!(
+                "{prog} failed to install the update.\n\nInstall it manually by running:\n  {cmdline}\n\n(after closing the launcher)"
+            );
+        }
+    }
+
+    anyhow::bail!(
+        "No graphical privilege helper is available on this system.\n\nInstall the update manually by running:\n  {installer} {installer_flag} {package_str}\n\n(after closing the launcher)"
+    );
+}
+
+pub fn cleanup_stale_update() {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(current) = std::env::current_exe() {
+            if let Some(dir) = current.parent() {
+                let _ = fs::remove_file(dir.join("lynncher-update-old.exe"));
+                let _ = fs::remove_file(dir.join("lynncher-update-staged.exe"));
+                let _ = fs::remove_file(dir.join("lynncher-update-cleanup.bat"));
+            }
+        }
     }
 }

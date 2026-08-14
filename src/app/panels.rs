@@ -863,7 +863,7 @@ impl LauncherApp {
         ui.separator();
         ui.label("Updates");
         ui.horizontal(|ui| {
-            ui.label(format!("Current version: v{}", env!("CARGO_PKG_VERSION")));
+            ui.label(format!("Current version: v{}", super::APP_VERSION));
             if !self.release_checking() {
                 let label = if self.release_check_done() {
                     "Re-check for updates"
