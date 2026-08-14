@@ -507,23 +507,41 @@ fn load_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     }
 
     for p in &paths {
-        if !p.exists() || !p.is_file() {
-            continue;
+        if let Some(tex) = load_texture_from_file(ctx, p, "launcher_logo") {
+            return Some(tex);
         }
-        let Ok(img) = image::open(p) else {
-            continue;
-        };
-        let rgba = img.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-            [w as usize, h as usize],
-            rgba.as_raw(),
-        );
-        return Some(ctx.load_texture(
-            "launcher_logo",
-            color_image,
-            egui::TextureOptions::LINEAR,
-        ));
     }
-    None
+
+    load_texture_from_bytes(ctx, include_bytes!("../logo.png"), "launcher_logo")
+}
+
+fn load_texture_from_file(
+    ctx: &egui::Context,
+    path: &std::path::Path,
+    name: &str,
+) -> Option<egui::TextureHandle> {
+    if !path.exists() || !path.is_file() {
+        return None;
+    }
+    let img = image::open(path).ok()?;
+    load_texture_from_bytes(ctx, &img.to_rgba8().into_raw(), name)
+}
+
+fn load_texture_from_bytes(
+    ctx: &egui::Context,
+    bytes: &[u8],
+    name: &str,
+) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+        [w as usize, h as usize],
+        rgba.as_raw(),
+    );
+    Some(ctx.load_texture(
+        name.to_string(),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
 }
