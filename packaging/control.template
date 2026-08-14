@@ -1,0 +1,9 @@
+Package: lynncher
+Version: __VERSION__
+Section: games
+Priority: optional
+Architecture: amd64
+Depends: libx11-6, libxkbcommon0, libxkbcommon-x11-0, libxcb1, libxcursor1, libxrandr2, libxi6, libgl1, libxext6, libwayland-client0, libasound2 | libasound2t64
+Maintainer: lynnite <lynnite@example.com>
+Description: The first SS14 launcher written in Rust
+ A cross-platform launcher for Space Station 14 written in Rust.

@@ -149,6 +149,8 @@ impl LauncherApp {
             let mut remove_target: Option<String> = None;
             let mut rename_target: Option<String> = None;
 
+            self.ensure_favorite_infos();
+
             egui::ScrollArea::vertical()
                 .id_salt("favorites_list")
                 .max_height(260.0)
@@ -159,37 +161,54 @@ impl LauncherApp {
                     self.cfg.color_scheme.item_b,
                 );
                 for address in self.cfg.favorite_servers.clone() {
-                    let display = self.favorite_display_name(&address);
+                    let (name, desc) = self.favorite_summary(&address);
                     egui::Frame::none()
                         .fill(item_col)
-                        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                        .inner_margin(egui::Margin::symmetric(8.0, 2.0))
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
+                            let summary = if desc.is_empty() {
+                                format!("{}\n{}", name, address)
+                            } else {
+                                format!("{}\n{}\n{}", name, address, desc)
+                            };
+                            let resp = ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
-                                    ui.label(egui::RichText::new(&display).strong());
-                                    ui.label(
-                                        egui::RichText::new(&address)
-                                            .small()
-                                            .weak(),
-                                    );
+                                    if desc.is_empty() {
+                                        ui.label(egui::RichText::new(&name).strong());
+                                        ui.label(
+                                            egui::RichText::new(&address)
+                                                .small()
+                                                .weak(),
+                                        );
+                                    } else {
+                                        ui.label(egui::RichText::new(&name).strong())
+                                            .on_hover_text(&summary);
+                                        ui.label(
+                                            egui::RichText::new(&desc)
+                                                .small()
+                                                .weak(),
+                                        )
+                                        .on_hover_text(&summary);
+                                    }
                                 });
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.button("Connect").clicked() {
+                                        if ui.small_button("Connect").clicked() {
                                             connect_target = Some(address.clone());
                                         }
-                                        if ui.button("Rename").clicked() {
+                                        if ui.small_button("Rename").clicked() {
                                             rename_target = Some(address.clone());
                                         }
-                                        if ui.button("Remove").clicked() {
+                                        if ui.small_button("Remove").clicked() {
                                             remove_target = Some(address.clone());
                                         }
                                     },
                                 );
                             });
+                            let _ = resp;
                         });
-                    ui.add_space(4.0);
+                    ui.add_space(1.0);
                 }
             });
 
@@ -231,14 +250,11 @@ impl LauncherApp {
 
     pub(super) fn draw_hub_page(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        let header_h = 0.0;
-        let toolbar_h = 40.0;
 
         let mut connect_target: Option<String> = None;
         let mut select_target: Option<String> = None;
         let mut clear_selection = false;
         let mut favorite_target: Option<String> = None;
-        let mut refresh = false;
         let selected_address_current = self.selected_server_address.clone();
         let selected_info_current = self.selected_server_info.clone();
 
@@ -266,7 +282,7 @@ impl LauncherApp {
             .cloned()
             .collect();
 
-        let table_h = (ui.available_height() - header_h - toolbar_h - 12.0).max(120.0);
+        let table_h = (ui.available_height() - 12.0).max(120.0);
 
         if self.hub_filters_visible {
             ui.horizontal_top(|ui| {
@@ -304,27 +320,6 @@ impl LauncherApp {
             );
         }
 
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.hub_search_query)
-                    .hint_text("Search For Servers…")
-                    .desired_width(ui.available_width() - 180.0),
-            );
-            let filters_label = format!(
-                "Filters ({}/{})",
-                filtered.len(),
-                self.servers.len()
-            );
-            ui.toggle_value(&mut self.hub_filters_visible, filters_label);
-            if ui.button("⟳").on_hover_text("Refresh").clicked() {
-                refresh = true;
-            }
-        });
-
-        if refresh {
-            self.refresh_hub_servers();
-        }
         if let Some(address) = favorite_target {
             self.toggle_favorite(&address);
         }
@@ -338,6 +333,70 @@ impl LauncherApp {
         if let Some(address) = connect_target {
             self.connect_via_hub(&address);
         }
+    }
+
+    pub(super) fn draw_hub_search_bar(&mut self, ctx: &egui::Context) {
+        if self.page != super::AppPage::Hub {
+            return;
+        }
+
+        let mut refresh = false;
+        let filtered_len = self.filtered_server_count();
+
+        egui::TopBottomPanel::top("hub_search")
+            .frame(egui::Frame::default().fill(egui::Color32::from_rgb(
+                self.cfg.color_scheme.footer_r,
+                self.cfg.color_scheme.footer_g,
+                self.cfg.color_scheme.footer_b,
+            )))
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.hub_search_query)
+                            .hint_text("Search For Servers…")
+                            .desired_width((ui.available_width() - 180.0).max(120.0)),
+                    );
+                    let filters_label = format!(
+                        "Filters ({}/{})",
+                        filtered_len,
+                        self.servers.len()
+                    );
+                    ui.toggle_value(&mut self.hub_filters_visible, filters_label);
+                    if ui.button("⟳").on_hover_text("Refresh").clicked() {
+                        refresh = true;
+                    }
+                });
+                ui.add_space(4.0);
+            });
+
+        if refresh {
+            self.refresh_hub_servers();
+        }
+    }
+
+    fn filtered_server_count(&self) -> usize {
+        let query = self.hub_search_query.trim().to_lowercase();
+        self.servers
+            .iter()
+            .filter(|s| {
+                let name = s.status_data.name.as_deref().unwrap_or("");
+                if !query.is_empty() {
+                    let hay = format!("{} {}", s.address.to_lowercase(), name.to_lowercase());
+                    if !hay.contains(&query) {
+                        return false;
+                    }
+                }
+                true
+                    && self.hub_filter_tags.iter().all(|wanted| {
+                        s.status_data
+                            .tags
+                            .as_deref()
+                            .map(|t| t.iter().any(|x| x == wanted))
+                            .unwrap_or(false)
+                    })
+            })
+            .count()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -401,7 +460,7 @@ impl LauncherApp {
 
                 egui::Frame::none()
                     .fill(row_bg)
-                    .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 2.0))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let name_w = (ui.available_width() - 260.0).max(120.0);
@@ -514,7 +573,7 @@ impl LauncherApp {
                             }
                         }
                     });
-                ui.add_space(4.0);
+                ui.add_space(1.0);
             }
         });
     }
@@ -817,11 +876,10 @@ impl LauncherApp {
                 if self.update_available() == Some(true) {
                     if ui
                         .button("Update launcher")
-                        .on_hover_text("Open the latest release to update the launcher")
+                        .on_hover_text("Download the compiled update for this OS")
                         .clicked()
                     {
-                        let ctx = ui.ctx().clone();
-                        self.start_update(&ctx);
+                        self.start_update();
                     }
                 }
             }

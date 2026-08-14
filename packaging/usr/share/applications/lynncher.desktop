@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Lynncher
+Comment=SS14 Launcher written in Rust
+Exec=lynncher
+Icon=lynncher
+Terminal=false
+Type=Application
+Categories=Game;
