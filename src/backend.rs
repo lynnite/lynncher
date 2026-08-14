@@ -31,7 +31,7 @@ pub use common::normalize_base_url;
 pub use config::{ensure_dirs, launcher_paths, load_config, load_config_from_path, save_config};
 pub use uri::apply_acz_inferred_urls;
 pub use uri::derive_connect_address;
-pub use updates::{check_latest_release, is_newer_tag};
+pub use updates::{check_latest_release, is_newer_tag, latest_release_url};
 pub use content::{download_and_install_content, download_content_zip, download_content_entries, merge_content_into};
 pub use download::{
     download_client_for_server_with_proxy_and_tokens,
