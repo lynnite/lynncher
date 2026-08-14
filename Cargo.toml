@@ -1,6 +1,6 @@
 [package]
 name = "ss14-launcher-rust"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 license = "MIT"
 

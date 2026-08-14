@@ -1,9 +1,7 @@
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
-use walkdir::WalkDir;
 
 use crate::backend::{
     account_key, active_account_for_auth, apply_acz_inferred_urls, auth_mode_disabled,
@@ -239,53 +237,6 @@ impl Connector {
             }
             Err(err) => {
                 download_err = Some(err);
-            }
-        }
-
-        if self.is_cancelled() {
-            self.set_status("Connection cancelled");
-            self.push_log(self.feedback_status());
-            self.finish();
-            return;
-        }
-
-        if let Some(fallback_exe) = self.resolve_fallback_executable() {
-            let mut runtime_cfg = self.cfg.clone();
-            runtime_cfg.game_executable = fallback_exe;
-
-            self.set_status("ZIP endpoints unavailable; falling back to local client executable");
-            self.push_log(self.feedback_status());
-
-            if let Some(build) = &info.build {
-                if build.manifest_download_url.is_some() || build.manifest_url.is_some() {
-                    self.push_log(
-                        "Server appears to use manifest/content protocol; using local client with build metadata",
-                    );
-                }
-            }
-
-            let has_content = Path::new(&runtime_cfg.game_executable)
-                .parent()
-                .map(Self::has_game_content)
-                .unwrap_or(false);
-
-            if !has_content {
-                self.push_log(
-                    "Local fallback client has no game content; skipping it and trying other paths.",
-                );
-            } else {
-                match launch_game_with_context(&runtime_cfg, Some(address), Some(&info)) {
-                    Ok(msg) => {
-                        self.set_status(msg);
-                        self.push_log(self.feedback_status());
-                        self.finish();
-                        return;
-                    }
-                    Err(err) => {
-                        self.set_status(format!("Fallback launch failed: {err:#}"));
-                        self.push_log(self.feedback_status());
-                    }
-                }
             }
         }
 
@@ -664,15 +615,6 @@ impl Connector {
         Ok(true)
     }
 
-    fn resolve_fallback_executable(&self) -> Option<String> {
-        let configured = self.cfg.game_executable.trim();
-        if !configured.is_empty() && Path::new(configured).exists() {
-            return Some(configured.to_string());
-        }
-        Self::find_newest_cached_client_executable(&self.paths.clients_dir)
-            .map(|p| p.to_string_lossy().into_owned())
-    }
-
     fn has_game_content(exe_dir: &Path) -> bool {
         const CONTENT_MARKERS: [&str; 3] = ["SS14.Loader", "Content.Client.dll", "content.ftl"];
         for name in CONTENT_MARKERS {
@@ -684,33 +626,5 @@ impl Connector {
             return true;
         }
         false
-    }
-
-    fn find_newest_cached_client_executable(clients_dir: &Path) -> Option<std::path::PathBuf> {
-        let candidates = [
-            "Robust.Client.dll",
-            "Robust.Client",
-            "Robust.Client.exe",
-        ];
-        let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
-        for entry in WalkDir::new(clients_dir).into_iter().filter_map(|e| e.ok()) {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let file_name = entry.file_name().to_string_lossy();
-            if !candidates.iter().any(|c| file_name.eq_ignore_ascii_case(c)) {
-                continue;
-            }
-            let modified = entry
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            match &best {
-                Some((best_time, _)) if modified <= *best_time => {}
-                _ => best = Some((modified, entry.path().to_path_buf())),
-            }
-        }
-        best.map(|(_, p)| p)
     }
 }
