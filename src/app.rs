@@ -55,6 +55,7 @@ struct UpdateCheckState {
     checking: bool,
     done: bool,
     version: Option<String>,
+    url: Option<String>,
     error: Option<String>,
 }
 
@@ -147,8 +148,10 @@ impl LauncherApp {
 
         fn draw_progress(&mut self, ui: &mut egui::Ui) {
         let progress = self.progress.clone();
+        let connecting = self.connection_active();
+
         let Some(progress) = progress else {
-            if self.connection_active() {
+            if connecting {
                 ui.horizontal(|ui| {
                     ui.label("Connecting...");
                     if self.cancel_button(ui) {
@@ -158,50 +161,42 @@ impl LauncherApp {
             }
             return;
         };
+
+        let frac = progress.fraction.clamp(0.0, 1.0);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(&progress.label);
-                let side = 18.0;
-                let height = (3.0_f32.sqrt() / 2.0) * side;
+                let width = 200.0;
+                let height = 10.0;
                 let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(height + 4.0, side + 4.0),
+                    egui::vec2(width, height),
                     egui::Sense::hover(),
                 );
                 let painter = ui.painter();
 
-                let frac = progress.fraction.clamp(0.0, 1.0);
-                let apex_x = rect.right() - 2.0;
-                let base_x = apex_x - height;
-                let center_y = rect.center().y;
-                let base_half = side / 2.0;
-
-                painter.add(egui::Shape::convex_polygon(
-                    vec![
-                        egui::pos2(base_x, center_y - base_half),
-                        egui::pos2(base_x, center_y + base_half),
-                        egui::pos2(apex_x, center_y),
-                    ],
+                painter.rect_filled(
+                    rect,
+                    0.0,
                     egui::Color32::from_rgb(0x36, 0x36, 0x36),
-                    egui::Stroke::NONE,
-                ));
+                );
 
                 if frac > 0.0 {
-                    let fill_x = base_x + height * frac;
-                    let half = base_half * frac;
-                    painter.add(egui::Shape::convex_polygon(
-                        vec![
-                            egui::pos2(apex_x, center_y),
-                            egui::pos2(fill_x, center_y - half),
-                            egui::pos2(fill_x, center_y + half),
-                        ],
+                    let fill = egui::Rect::from_min_size(
+                        rect.min,
+                        egui::vec2(width * frac, height),
+                    );
+                    painter.rect_filled(
+                        fill,
+                        0.0,
                         egui::Color32::from_rgb(0xBF, 0xBF, 0xBF),
-                        egui::Stroke::NONE,
-                    ));
+                    );
                 }
             });
 
-            if self.cancel_button(ui) {
-                self.cancel_connection();
+            if connecting {
+                if self.cancel_button(ui) {
+                    self.cancel_connection();
+                }
             }
         });
     }

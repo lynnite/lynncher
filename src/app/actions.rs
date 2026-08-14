@@ -8,9 +8,9 @@ use crate::backend::{
     download_client_for_server_with_proxy_and_tokens, download_content_zip,
     download_engine_client_for_version, download_engine_module_for_engine_version,
     fetch_hub_servers_with_options, fetch_server_info_direct_with_proxy,
-    fetch_server_info_from_hub_with_options, is_newer_tag, launch_game_with_context,
-    merge_content_into, normalize_base_url, stage_sdl3_native_runtime, HubRequestOptions,
-    ServerInfo,
+    fetch_server_info_from_hub_with_options, is_newer_tag, latest_release_url,
+    launch_game_with_context, merge_content_into, normalize_base_url, stage_sdl3_native_runtime,
+    HubRequestOptions, ServerInfo,
 };
 
 use super::LauncherApp;
@@ -130,6 +130,7 @@ impl LauncherApp {
             state.checking = true;
             state.done = false;
             state.version = None;
+            state.url = None;
             state.error = None;
         }
 
@@ -145,6 +146,7 @@ impl LauncherApp {
                 match result {
                     Ok(Some(tag)) => {
                         s.version = Some(tag);
+                        s.url = latest_release_url(proxy.as_deref()).ok().flatten();
                     }
                     Ok(None) => {
                         s.error = Some(String::from("Could not determine latest release"));
@@ -157,6 +159,22 @@ impl LauncherApp {
                 s.done = true;
             }
         });
+    }
+
+    pub(crate) fn start_update(&mut self, ctx: &egui::Context) {
+        let url = self
+            .update_check
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .url
+            .clone()
+            .unwrap_or_else(|| String::from("https://github.com/lynnite/lynncher/releases/latest"));
+        ctx.open_url(egui::output::OpenUrl {
+            url,
+            new_tab: true,
+        });
+        self.status = String::from("Opening the latest release page to update the launcher");
+        self.push_log(self.status.clone());
     }
 
     pub(crate) fn update_available(&self) -> Option<bool> {

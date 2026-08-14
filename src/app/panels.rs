@@ -165,23 +165,29 @@ impl LauncherApp {
                         .inner_margin(egui::Margin::symmetric(10.0, 7.0))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&display).strong());
-                                ui.label(egui::RichText::new(&address).small().weak());
+                                ui.vertical(|ui| {
+                                    ui.label(egui::RichText::new(&display).strong());
+                                    ui.label(
+                                        egui::RichText::new(&address)
+                                            .small()
+                                            .weak(),
+                                    );
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button("Connect").clicked() {
+                                            connect_target = Some(address.clone());
+                                        }
+                                        if ui.button("Rename").clicked() {
+                                            rename_target = Some(address.clone());
+                                        }
+                                        if ui.button("Remove").clicked() {
+                                            remove_target = Some(address.clone());
+                                        }
+                                    },
+                                );
                             });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Remove").clicked() {
-                                        remove_target = Some(address.clone());
-                                    }
-                                    if ui.button("Rename").clicked() {
-                                        rename_target = Some(address.clone());
-                                    }
-                                    if ui.button("Connect").clicked() {
-                                        connect_target = Some(address.clone());
-                                    }
-                                },
-                            );
                         });
                     ui.add_space(4.0);
                 }
@@ -807,6 +813,16 @@ impl LauncherApp {
                 };
                 if ui.button(label).on_hover_text("Contact GitHub to look for a newer release").clicked() {
                     self.start_update_check();
+                }
+                if self.update_available() == Some(true) {
+                    if ui
+                        .button("Update launcher")
+                        .on_hover_text("Open the latest release to update the launcher")
+                        .clicked()
+                    {
+                        let ctx = ui.ctx().clone();
+                        self.start_update(&ctx);
+                    }
                 }
             }
         });
