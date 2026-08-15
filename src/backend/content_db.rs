@@ -1,5 +1,6 @@
 
 use std::fs;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -196,6 +197,16 @@ fn create_schema(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blake2::digest::typenum::U32;
+    use blake2::{Blake2b, Digest};
+
+    fn blake2b_hex(data: &[u8]) -> String {
+        let mut hasher = Blake2b::<U32>::new();
+        hasher.update(data);
+        let out = hasher.finalize();
+        let out: &[u8] = &out;
+        out.iter().map(|b| format!("{b:02x}")).collect()
+    }
 
     #[test]
     fn builds_usable_database() {
@@ -204,7 +215,7 @@ mod tests {
         fs::create_dir_all(&cache_dir).unwrap();
 
         let data = b"hello content db";
-        let hash = crate::backend::content::hash_bytes_hex(data);
+        let hash = blake2b_hex(data);
         fs::write(cache_dir.join(&hash), data).unwrap();
 
         let entries = vec![
@@ -222,7 +233,7 @@ mod tests {
             &tmp.join("content.db"),
             &cache_dir,
             &entries,
-            &crate::backend::content::hash_bytes_hex(b"manifest"),
+            &blake2b_hex(b"manifest"),
             Some("fork"),
             Some("1.0"),
             "264.0.2",

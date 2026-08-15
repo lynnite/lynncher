@@ -165,7 +165,6 @@ impl Connector {
         }
 
         let proxy = self.hub_options().proxy_url;
-        let mut download_err: Option<anyhow::Error> = None;
 
         let cancel_flag = self
             .feedback
@@ -179,7 +178,7 @@ impl Connector {
             .map(|t| t.as_deref())
             .collect();
 
-        match download_client_for_server_with_proxy_and_tokens(
+        let download_err = match download_client_for_server_with_proxy_and_tokens(
             &self.paths,
             address,
             &info,
@@ -235,10 +234,8 @@ impl Connector {
                 self.finish();
                 return;
             }
-            Err(err) => {
-                download_err = Some(err);
-            }
-        }
+            Err(err) => err,
+        };
 
         if self.is_cancelled() {
             self.set_status("Connection cancelled");
@@ -254,6 +251,7 @@ impl Connector {
                         self.set_status("Launched client through SS14.Loader");
                         self.push_log(self.feedback_status());
                         self.finish();
+                        
                         return;
                     }
                     Ok(false) => {
@@ -274,17 +272,12 @@ impl Connector {
             }
         }
 
-        if let Some(err) = download_err {
-            if is_connection_cancelled(&err) {
-                self.set_status("Connection cancelled");
-            } else {
-                self.set_status(format!("Client download failed: {err:#}"));
-            }
-            self.push_log(self.feedback_status());
+        if is_connection_cancelled(&download_err) {
+            self.set_status("Connection cancelled");
         } else {
-            self.set_status("Client download failed: no attempts executed");
-            self.push_log(self.feedback_status());
+            self.set_status(format!("Client download failed: {download_err:#}"));
         }
+        self.push_log(self.feedback_status());
 
         self.finish();
     }

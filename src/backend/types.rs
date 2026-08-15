@@ -1,6 +1,4 @@
 use std::path::PathBuf;
-
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +21,25 @@ pub struct LauncherPaths {
 
 fn default_reconnect_delay() -> u64 {
     3000
+}
+
+fn default_pause_gifs_unfocused() -> bool {
+    true
+}
+
+fn default_bg_scale() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundImage {
+    pub path: String,
+    #[serde(default)]
+    pub pos_x: f32,
+    #[serde(default)]
+    pub pos_y: f32,
+    #[serde(default = "default_bg_scale")]
+    pub scale: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -135,6 +152,10 @@ pub struct LauncherConfig {
     #[serde(default)]
     pub background_image: String,
     #[serde(default)]
+    pub background_images: Vec<BackgroundImage>,
+    #[serde(default = "default_pause_gifs_unfocused")]
+    pub pause_animations_unfocused: bool,
+    #[serde(default)]
     pub background_image_config: BackgroundImageConfig,
     #[serde(default)]
     pub color_scheme: ColorScheme,
@@ -161,6 +182,8 @@ impl Default for LauncherConfig {
             auto_reconnect_delay_ms: 3000,
             auto_update: false,
             background_image: String::new(),
+            background_images: Vec::new(),
+            pause_animations_unfocused: true,
             background_image_config: BackgroundImageConfig::default(),
             color_scheme: ColorScheme::default(),
             favorite_servers: Vec::new(),
@@ -228,8 +251,6 @@ pub struct ServerInfo {
 pub struct ServerInfoLink {
     #[serde(rename = "name")]
     pub name: String,
-    #[serde(rename = "icon")]
-    pub icon: Option<String>,
     #[serde(rename = "url")]
     pub url: String,
 }
@@ -268,5 +289,4 @@ pub struct ServerBuildInformation {
 pub struct ClientInstall {
     pub install_dir: PathBuf,
     pub executable_path: PathBuf,
-    pub connect_address: String,
 }

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -11,10 +12,6 @@ use super::{
     display_path, launcher_paths, normalize_base_url, stage_sdl3_native_runtime, LauncherConfig,
     ServerInfo,
 };
-
-pub fn launch_game(cfg: &LauncherConfig) -> Result<String> {
-    launch_game_with_context(cfg, None, None)
-}
 
 pub fn launch_game_with_context(
     cfg: &LauncherConfig,

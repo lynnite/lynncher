@@ -43,8 +43,13 @@ pub struct LauncherApp {
     extension_files: Vec<String>,
     page: AppPage,
     logo_texture: Option<egui::TextureHandle>,
-    background_texture: Option<egui::TextureHandle>,
     background_sig: Option<String>,
+    background_items: Vec<BackgroundItem>,
+    background_anim_start: Option<std::time::Instant>,
+    background_edit_index: usize,
+    background_decode:
+        Option<std::sync::Arc<std::sync::Mutex<Option<Vec<BackgroundLoadResult>>>>>,
+    background_decode_pending: bool,
     progress: Option<ProgressState>,
     background: Option<worker::BackgroundWork>,
     favorite_name_inputs: std::collections::HashMap<String, String>,
@@ -60,6 +65,32 @@ pub struct LauncherApp {
 struct ProgressState {
     fraction: f32,
     label: String,
+}
+
+#[derive(Clone)]
+struct BackgroundAnimation {
+    frames: Vec<egui::ColorImage>,
+    delays_ms: Vec<u64>,
+}
+
+#[derive(Clone)]
+struct BackgroundItem {
+    path: String,
+    pos_x: f32,
+    pos_y: f32,
+    scale: f32,
+    texture: Option<egui::TextureHandle>,
+    animation: Option<BackgroundAnimation>,
+    anim_frame: usize,
+}
+
+struct BackgroundLoadResult {
+    path: String,
+    pos_x: f32,
+    pos_y: f32,
+    scale: f32,
+    animation: Option<BackgroundAnimation>,
+    static_image: Option<egui::ColorImage>,
 }
 
 #[derive(Default)]
@@ -140,8 +171,12 @@ impl LauncherApp {
             extension_files,
             page: AppPage::Favorites,
             logo_texture: None,
-            background_texture: None,
             background_sig: None,
+            background_items: Vec::new(),
+            background_anim_start: None,
+            background_edit_index: 0,
+            background_decode: None,
+            background_decode_pending: false,
             progress: None,
             background: None,
             favorite_name_inputs: std::collections::HashMap::new(),
@@ -225,7 +260,7 @@ impl LauncherApp {
             .min_size(egui::vec2(72.0, 28.0))
             .rounding(0.0)
             .fill(egui::Color32::from_rgb(0x50, 0x18, 0x18))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x8A, 0x20, 0x20)));
+            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x8A, 0x20, 0x20)));
         ui.add(btn)
             .on_hover_text("Stop connecting and remove partially downloaded files")
             .clicked()
@@ -246,6 +281,7 @@ impl eframe::App for LauncherApp {
         self.draw_hub_search_bar(ctx);
 
         self.sync_background(ctx);
+        self.poll_background_items(ctx);
 
         let page = self.page;
 
@@ -258,23 +294,32 @@ impl eframe::App for LauncherApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(bg_fill))
             .show(ctx, |ui| {
-                if let Some(tex) = self.background_texture.clone() {
-                    let bg_cfg = self.cfg.background_image_config.clone();
-                    let screen = ui.max_rect();
-                    let size = tex.size_vec2();
-                    const START_SCALE: f32 = 0.1;
-                    let base = (screen.width() / size.x).max(screen.height() / size.y)
-                        * START_SCALE
-                        * bg_cfg.scale.max(0.01);
-                    let draw_size = egui::vec2(size.x * base, size.y * base);
-                    let center = screen.center() + egui::vec2(bg_cfg.pos_x, bg_cfg.pos_y);
-                    let pos = center - draw_size * 0.5;
-                    let draw_rect = egui::Rect::from_min_size(pos, draw_size);
-                    let uv = egui::Rect::from_min_max(
-                        egui::pos2(0.0, 0.0),
-                        egui::pos2(1.0, 1.0),
-                    );
-                    ui.painter().image(tex.id(), draw_rect, uv, egui::Color32::WHITE);
+                let screen = ui.max_rect();
+                const START_SCALE: f32 = 0.5;
+                for (i, item) in self.background_items.iter().enumerate() {
+                    if let Some(tex) = &item.texture {
+                        let (px, py, scale) = if !self.cfg.background_images.is_empty() {
+                            let b = &self.cfg.background_images
+                                [i.min(self.cfg.background_images.len() - 1)];
+                            (b.pos_x, b.pos_y, b.scale)
+                        } else {
+                            (item.pos_x, item.pos_y, item.scale)
+                        };
+                        let size = tex.size_vec2();
+                        let base = (screen.width() / size.x).max(screen.height() / size.y)
+                            * START_SCALE
+                            * scale.max(0.01);
+                        let draw_size = egui::vec2(size.x * base, size.y * base);
+                        let center = screen.center() + egui::vec2(px, py);
+                        let pos = center - draw_size * 0.5;
+                        let draw_rect = egui::Rect::from_min_size(pos, draw_size);
+                        let uv = egui::Rect::from_min_max(
+                            egui::pos2(0.0, 0.0),
+                            egui::pos2(1.0, 1.0),
+                        );
+                        ui.painter()
+                            .image(tex.id(), draw_rect, uv, egui::Color32::WHITE);
+                    }
                 }
 
                 match page {
@@ -295,25 +340,195 @@ impl eframe::App for LauncherApp {
 
 impl LauncherApp {
     fn sync_background(&mut self, ctx: &egui::Context) {
-        let path = self.cfg.background_image.trim().to_string();
-        let sig = if path.is_empty() {
-            String::new()
-        } else {
-            let len = std::fs::File::open(&path)
-                .ok()
-                .and_then(|f| f.metadata().ok())
-                .map(|m| m.len());
-            format!("{path}:{len:?}")
-        };
-        if self.background_sig.as_deref() == Some(sig.as_str()) {
+        let mut items: Vec<(String, f32, f32, f32)> = Vec::new();
+        if !self.cfg.background_images.is_empty() {
+            for img in &self.cfg.background_images {
+                items.push((img.path.clone(), img.pos_x, img.pos_y, img.scale));
+            }
+        } else if !self.cfg.background_image.trim().is_empty() {
+            let c = &self.cfg.background_image_config;
+            items.push((
+                self.cfg.background_image.clone(),
+                c.pos_x,
+                c.pos_y,
+                c.scale,
+            ));
+        }
+
+        let sig = items
+            .iter()
+            .map(|(p, _, _, _)| {
+                let len = std::fs::File::open(p)
+                    .ok()
+                    .and_then(|f| f.metadata().ok())
+                    .map(|m| m.len());
+                format!("{p}:{len:?}")
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+
+        if self.background_sig.as_deref() != Some(sig.as_str()) {
+            self.background_sig = Some(sig);
+            self.background_items.clear();
+            self.background_anim_start = None;
+            self.background_decode_pending = true;
+
+            let slot: std::sync::Arc<
+                std::sync::Mutex<Option<Vec<BackgroundLoadResult>>>,
+            > = std::sync::Arc::new(std::sync::Mutex::new(None));
+            self.background_decode = Some(slot.clone());
+
+            std::thread::spawn(move || {
+                let results: Vec<BackgroundLoadResult> = items
+                    .into_iter()
+                    .map(|(path, px, py, scale)| {
+                        if let Some(animation) = load_background_animation(&path) {
+                            BackgroundLoadResult {
+                                path,
+                                pos_x: px,
+                                pos_y: py,
+                                scale,
+                                animation: Some(animation),
+                                static_image: None,
+                            }
+                        } else {
+                            let static_image = load_static_color_image(&path);
+                            BackgroundLoadResult {
+                                path,
+                                pos_x: px,
+                                pos_y: py,
+                                scale,
+                                animation: None,
+                                static_image,
+                            }
+                        }
+                    })
+                    .collect();
+                if let Ok(mut guard) = slot.lock() {
+                    *guard = Some(results);
+                }
+            });
             return;
         }
-        self.background_sig = Some(sig);
-        self.background_texture = if path.is_empty() {
-            None
-        } else {
-            load_background_texture(ctx, &path)
+
+        let any_anim = self.background_items.iter().any(|it| it.animation.is_some());
+        if any_anim {
+            let paused =
+                self.cfg.pause_animations_unfocused && !ctx.input(|i| i.focused);
+            if !paused {
+                if let Some(dur) = self.advance_background_animations(ctx) {
+                    ctx.request_repaint_after(dur);
+                }
+            }
+        }
+    }
+
+    fn poll_background_items(&mut self, ctx: &egui::Context) {
+        if !self.background_decode_pending {
+            return;
+        }
+
+        let results = {
+            let Some(slot) = &self.background_decode else {
+                return;
+            };
+            let mut guard = match slot.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            guard.take()
         };
+
+        let Some(results) = results else {
+            return; // decode still in progress; keep waiting
+        };
+
+        self.background_decode_pending = false;
+        self.background_items.clear();
+        for r in results {
+            let mut item = BackgroundItem {
+                path: r.path.clone(),
+                pos_x: r.pos_x,
+                pos_y: r.pos_y,
+                scale: r.scale,
+                texture: None,
+                animation: r.animation.clone(),
+                anim_frame: 0,
+            };
+
+            if let Some(anim) = &r.animation {
+                if let Some(first) = anim.frames.first() {
+                    item.texture = Some(ctx.load_texture(
+                        "launcher_background",
+                        first.clone(),
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+            } else if let Some(img) = &r.static_image {
+                item.texture = Some(ctx.load_texture(
+                    "launcher_background",
+                    img.clone(),
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+            self.background_items.push(item);
+        }
+
+        let with_tex = self.background_items.iter().filter(|i| i.texture.is_some()).count();
+        let with_anim = self.background_items.iter().filter(|i| i.animation.is_some()).count();
+        self.status = format!(
+            "Loaded {} background item(s): {} with texture, {} animated",
+            self.background_items.len(),
+            with_tex,
+            with_anim
+        );
+        self.push_log(self.status.clone());
+        self.background_anim_start = Some(std::time::Instant::now());
+        ctx.request_repaint();
+    }
+
+    fn advance_background_animations(&mut self, _ctx: &egui::Context) -> Option<std::time::Duration> {
+        let start = self.background_anim_start;
+        let elapsed_ms = start?.elapsed().as_millis() as u64;
+        let mut min_wait: Option<u64> = None;
+
+        for item in &mut self.background_items {
+            let Some(anim) = &item.animation else { continue };
+            let frame_count = anim.frames.len();
+            if frame_count == 0 {
+                continue;
+            }
+            let total: u64 = anim.delays_ms.iter().sum();
+            if total == 0 {
+                continue;
+            }
+            let t = elapsed_ms % total;
+            let mut acc = 0u64;
+            let mut idx = 0usize;
+            for (i, d) in anim.delays_ms.iter().enumerate() {
+                if i == frame_count - 1 || t < acc + d {
+                    idx = i;
+                    break;
+                }
+                acc += d;
+            }
+            if idx != item.anim_frame {
+                item.anim_frame = idx;
+                if let Some(img) = anim.frames.get(idx) {
+                    if let Some(tex) = &mut item.texture {
+                        tex.set(img.clone(), egui::TextureOptions::LINEAR);
+                    }
+                }
+            }
+            let frame_elapsed = t.saturating_sub(acc);
+            let wait_ms = anim.delays_ms[idx].saturating_sub(frame_elapsed).max(1);
+            min_wait = Some(match min_wait {
+                Some(m) => m.min(wait_ms),
+                None => wait_ms,
+            });
+        }
+
+        min_wait.map(std::time::Duration::from_millis)
     }
 
     fn draw_header_panel(&mut self, ctx: &egui::Context) {
@@ -338,10 +553,9 @@ impl LauncherApp {
                                 new_tab: true,
                             });
                         }
-                    });
+                    }); 
                 });
                 ui.add_space(8.0);
-
                 let (rect, _) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), 2.0),
                     egui::Sense::hover(),
@@ -451,20 +665,59 @@ impl LauncherApp {
     }
 }
 
-fn load_background_texture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+fn load_static_color_image(path: &str) -> Option<egui::ColorImage> {
+    let img = image::open(path).ok()?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [w as usize, h as usize],
+        rgba.as_raw(),
+    ))
+}
+
+fn load_background_animation(path: &str) -> Option<BackgroundAnimation> {
     let p = std::path::Path::new(path);
     if !p.exists() {
         return None;
     }
-    let img = image::open(p).ok()?.to_rgba8();
-    let (w, h) = img.dimensions();
-    let color_image =
-        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
-    Some(ctx.load_texture(
-        "launcher_background",
-        color_image,
-        egui::TextureOptions::LINEAR,
-    ))
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if ext == "gif" {
+        return load_gif_animation(path);
+    }
+    None
+}
+
+fn load_gif_animation(path: &str) -> Option<BackgroundAnimation> {
+    use image::AnimationDecoder;
+    let file = std::fs::File::open(path).ok()?;
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)).ok()?;
+    let frames = decoder.into_frames().collect_frames().ok()?;
+    if frames.is_empty() {
+        return None;
+    }
+
+    let mut color_frames = Vec::with_capacity(frames.len());
+    let mut delays_ms = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let buffer = frame.buffer();
+        let (w, h) = buffer.dimensions();
+        color_frames.push(egui::ColorImage::from_rgba_unmultiplied(
+            [w as usize, h as usize],
+            buffer.as_raw(),
+        ));
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        let ms = if denom == 0 {
+            100
+        } else {
+            ((numer as f64) / (denom as f64)) as u64
+        };
+        delays_ms.push(ms.max(1));
+    }
+
+    Some(BackgroundAnimation {
+        frames: color_frames,
+        delays_ms,
+    })
 }
 
 fn load_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
@@ -524,7 +777,17 @@ fn load_texture_from_file(
         return None;
     }
     let img = image::open(path).ok()?;
-    load_texture_from_bytes(ctx, &img.to_rgba8().into_raw(), name)
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+        [w as usize, h as usize],
+        rgba.as_raw(),
+    );
+    Some(ctx.load_texture(
+        name.to_string(),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 fn load_texture_from_bytes(

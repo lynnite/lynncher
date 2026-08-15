@@ -48,24 +48,6 @@ pub(crate) fn get_server_api_address(server_address: &str) -> Result<String> {
     }
 }
 
-pub(crate) fn get_server_root_http_address(server_address: &str) -> Result<String> {
-    let parsed = parse_ss14_uri(server_address)?;
-
-    let host = parsed.host_str().context("server URI has no host")?;
-    let (http_scheme, port) = if parsed.scheme() == "ss14" {
-        ("http", parsed.port().or(Some(SS14_DEFAULT_PORT)))
-    } else {
-        ("https", parsed.port())
-    };
-
-    let base = match port {
-        Some(p) => format!("{http_scheme}://{host}:{p}"),
-        None => format!("{http_scheme}://{host}"),
-    };
-
-    Ok(format!("{base}/"))
-}
-
 pub(crate) fn resolve_maybe_relative_url(base: &str, maybe_relative: &str) -> Result<String> {
     if maybe_relative.starts_with("http://") || maybe_relative.starts_with("https://") {
         return Ok(maybe_relative.to_string());

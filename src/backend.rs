@@ -1,5 +1,8 @@
 mod accounts;
 mod api;
+
+
+
 mod common;
 mod config;
 mod content;
@@ -43,12 +46,12 @@ pub use download::{
 };
 pub use extensions::{list_sideloaded_extensions, remove_sideloaded_extension, sideload_extension_bundle};
 pub use launch::launch_game_with_context;
-pub use loader::{ensure_loader_installed, LoaderInstall};
+pub use loader::ensure_loader_installed;
 pub use loader_launch::{launch_game_via_loader, LoaderLaunchSpec};
-pub use content_db::{build_content_database, ContentDbEntry, ContentDatabase};
+pub use content_db::{build_content_database, ContentDbEntry};
 pub use types::{
     AccountProfile,
-    BackgroundImageConfig,
+    BackgroundImage,
     ClientInstall,
     ColorScheme,
     HubRequestOptions,
