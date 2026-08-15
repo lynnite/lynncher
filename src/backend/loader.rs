@@ -13,7 +13,6 @@ const LAUNCHER_RELEASES_URL: &str =
     "https://api.github.com/repos/space-wizards/SS14.Launcher/releases/latest";
 
 pub struct LoaderInstall {
-    pub loader_dir: PathBuf,
     pub loader_exe: PathBuf,
     pub signing_key: PathBuf,
 }
@@ -31,7 +30,6 @@ pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -
 
     if loader_exe.exists() && signing_key.exists() {
         return Ok(LoaderInstall {
-            loader_dir: loader_dir.clone(),
             loader_exe,
             signing_key,
         });
@@ -106,7 +104,6 @@ pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -
     }
 
     Ok(LoaderInstall {
-        loader_dir,
         loader_exe,
         signing_key,
     })

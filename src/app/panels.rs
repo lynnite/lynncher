@@ -162,6 +162,10 @@ impl LauncherApp {
                 );
                 for address in self.cfg.favorite_servers.clone() {
                     let (name, desc) = self.favorite_summary(&address);
+                    let server_entry = self
+                        .servers
+                        .iter()
+                        .find(|s| s.address.eq_ignore_ascii_case(&address));
                     egui::Frame::none()
                         .fill(item_col)
                         .inner_margin(egui::Margin::symmetric(8.0, 2.0))
@@ -174,12 +178,14 @@ impl LauncherApp {
                             let resp = ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
                                     if desc.is_empty() {
-                                        ui.label(egui::RichText::new(&name).strong());
+                                        ui.label(egui::RichText::new(&name).strong())
+                                            .on_hover_text(&summary);
                                         ui.label(
                                             egui::RichText::new(&address)
                                                 .small()
                                                 .weak(),
-                                        );
+                                        )
+                                        .on_hover_text(&summary);
                                     } else {
                                         ui.label(egui::RichText::new(&name).strong())
                                             .on_hover_text(&summary);
@@ -190,6 +196,38 @@ impl LauncherApp {
                                         )
                                         .on_hover_text(&summary);
                                     }
+                                    ui.horizontal(|ui| {
+                                        let round_time = server_entry
+                                            .map(format_round_time)
+                                            .unwrap_or_else(|| String::from("—"));
+                                        ui.label(
+                                            egui::RichText::new(round_time)
+                                                .small()
+                                                .color(SUB_TEXT),
+                                        );
+                                        if let Some(entry) = server_entry {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} / {}",
+                                                    entry.status_data.players,
+                                                    entry.status_data.soft_max_players
+                                                ))
+                                                .small()
+                                                .strong()
+                                                .color(GOLD),
+                                            )
+                                            .on_hover_text("Players currently online / soft max");
+                                        } else {
+                                            ui.label(
+                                                egui::RichText::new("offline")
+                                                    .small()
+                                                    .weak(),
+                                            )
+                                            .on_hover_text(
+                                                "No live status available for this server",
+                                            );
+                                        }
+                                    });
                                 });
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -732,58 +770,118 @@ impl LauncherApp {
 
         ui.separator();
         ui.label("Appearance");
+
+        let mut add_image: Option<String> = None;
+        let mut remove_index: Option<usize> = None;
+        
+
         ui.horizontal(|ui| {
-            ui.label("Background image:");
-            if ui.button("Choose image").clicked() {
+            if ui.button("Add image or GIF").clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
-                    self.cfg.background_image = path.display().to_string();
-                    self.status = format!("Background image set to {}", self.cfg.background_image);
-                    self.push_log(self.status.clone());
+                    add_image = Some(path.display().to_string());
                 }
             }
-            if ui.button("Clear").clicked() {
-                self.cfg.background_image.clear();
-                self.status = String::from("Background image cleared");
-                self.push_log(self.status.clone());
+            if !self.cfg.background_images.is_empty() {
+                if ui.button("Remove selected").clicked() {
+                    remove_index = Some(self.background_edit_index);
+                }
             }
         });
-        if !self.cfg.background_image.trim().is_empty() {
+
+        if self.cfg.background_images.is_empty() {
             ui.label(
-                egui::RichText::new(&self.cfg.background_image)
+                egui::RichText::new("No background media added")
                     .small()
                     .weak(),
             );
         } else {
+            if self.background_edit_index >= self.cfg.background_images.len() {
+                self.background_edit_index = self.cfg.background_images.len() - 1;
+            }
+            let edit = self.background_edit_index;
+            let current = self.cfg.background_images[edit].path.clone();
+            let mut chosen = edit;
+            egui::ComboBox::from_id_salt("background_images_combo")
+                .selected_text(current)
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for (i, img) in self.cfg.background_images.iter().enumerate() {
+                        if ui
+                            .selectable_label(i == self.background_edit_index, &img.path)
+                            .clicked()
+                        {
+                            chosen = i;
+                        }
+                    }
+                });
+            if chosen != self.background_edit_index {
+                self.background_edit_index = chosen;
+            }
+        }
+
+        if let Some(path) = add_image {
+            if !self.cfg.background_images.iter().any(|b| b.path == path) {
+                let cascade = self.cfg.background_images.len() as f32;
+                self.cfg.background_images.push(crate::backend::BackgroundImage {
+                    path: path.clone(),
+                    pos_x: cascade * 40.0,
+                    pos_y: cascade * 25.0,
+                    scale: 1.0,
+                });
+                self.background_edit_index = self.cfg.background_images.len() - 1;
+            }
+            self.status = format!("Background media added: {path}");
+            self.push_log(self.status.clone());
+        }
+
+        if let Some(i) = remove_index {
+            if i < self.cfg.background_images.len() {
+                self.cfg.background_images.remove(i);
+                self.status = String::from("Background media removed");
+                self.push_log(self.status.clone());
+            }
+            if self.background_edit_index >= self.cfg.background_images.len() {
+                self.background_edit_index =
+                    self.cfg.background_images.len().saturating_sub(1);
+            }
+        }
+
+        ui.separator();
+        ui.label("Selected background positioning");
+        if let Some(edit) = self.cfg.background_images.get_mut(self.background_edit_index) {
+            ui.horizontal(|ui| {
+                ui.label("Position X:");
+                ui.add(egui::DragValue::new(&mut edit.pos_x).speed(1.0));
+                ui.label("Position Y:");
+                ui.add(egui::DragValue::new(&mut edit.pos_y).speed(1.0));
+                ui.label("Scale:");
+                ui.add(
+                    egui::DragValue::new(&mut edit.scale)
+                        .range(0.1..=10.0)
+                        .speed(0.05),
+                );
+            });
+            if ui
+                .button("Center image")
+                .on_hover_text("Reset the selected image to the center of the window")
+                .clicked()
+            {
+                edit.pos_x = 0.0;
+                edit.pos_y = 0.0;
+            }
+        } else {
             ui.label(
-                egui::RichText::new("No background image selected")
+                egui::RichText::new("Add a background above to adjust its position")
                     .small()
                     .weak(),
             );
         }
-        ui.separator();
-        ui.label("Background image positioning");
-        ui.horizontal(|ui| {
-            ui.label("Position X:");
-            ui.add(egui::DragValue::new(&mut self.cfg.background_image_config.pos_x).speed(1.0));
-            ui.label("Position Y:");
-            ui.add(egui::DragValue::new(&mut self.cfg.background_image_config.pos_y).speed(1.0));
-            ui.label("Scale:");
-            ui.add(
-                egui::DragValue::new(&mut self.cfg.background_image_config.scale)
-                    .range(0.1..=10.0)
-                    .speed(0.05),
-            );
-        });
-        if !self.cfg.background_image.trim().is_empty() {
-            if ui
-                .button("Center image")
-                .on_hover_text("Reset the image to the center of the window")
-                .clicked()
-            {
-                self.cfg.background_image_config.pos_x = 0.0;
-                self.cfg.background_image_config.pos_y = 0.0;
-            }
-        }
+
+        ui.checkbox(
+            &mut self.cfg.pause_animations_unfocused,
+            "Pause animations when the window is unfocused",
+        );
+
         ui.separator();
         ui.separator();
         ui.label("Color scheme");

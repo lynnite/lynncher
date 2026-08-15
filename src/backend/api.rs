@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+
 use chrono::{DateTime, Utc};
+
 use reqwest::StatusCode;
 use serde::Deserialize;
 
@@ -8,10 +10,6 @@ use super::uri;
 use super::{
     normalize_base_url, AccountProfile, HubRequestOptions, HubServerEntry, ServerInfo,
 };
-
-pub fn fetch_hub_servers(hub_url: &str) -> Result<Vec<HubServerEntry>> {
-    fetch_hub_servers_with_options(hub_url, HubRequestOptions::default())
-}
 
 pub fn fetch_hub_servers_with_options(
     hub_url: &str,
@@ -33,10 +31,6 @@ pub fn fetch_hub_servers_with_options(
     response
         .json::<Vec<HubServerEntry>>()
         .context("parsing hub server list")
-}
-
-pub fn fetch_server_info_from_hub(hub_url: &str, server_address: &str) -> Result<ServerInfo> {
-    fetch_server_info_from_hub_with_options(hub_url, server_address, HubRequestOptions::default())
 }
 
 pub fn fetch_server_info_from_hub_with_options(
@@ -61,10 +55,6 @@ pub fn fetch_server_info_from_hub_with_options(
     response.json::<ServerInfo>().context("parsing server info")
 }
 
-pub fn fetch_server_info_direct(server_address: &str) -> Result<ServerInfo> {
-    fetch_server_info_direct_with_proxy(server_address, None)
-}
-
 pub fn fetch_server_info_direct_with_proxy(
     server_address: &str,
     proxy_url: Option<&str>,
@@ -85,10 +75,6 @@ pub fn fetch_server_info_direct_with_proxy(
     response
         .json::<ServerInfo>()
         .context("parsing direct server info response")
-}
-
-pub fn authenticate_account(auth_url: &str, username: &str, password: &str) -> Result<AccountProfile> {
-    authenticate_account_with_proxy(auth_url, username, password, None)
 }
 
 pub fn authenticate_account_with_proxy(
@@ -145,3 +131,5 @@ struct AuthSuccessResponse {
     #[serde(rename = "expireTime", alias = "ExpireTime")]
     expire_time: DateTime<Utc>,
 }
+
+

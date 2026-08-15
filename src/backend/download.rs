@@ -15,7 +15,7 @@ use zip::ZipArchive;
 use super::http::{
     http_client_for_content, http_client_with_proxy, http_client_with_proxy_and_timeout,
 };
-use super::uri::{derive_connect_address, get_server_api_address, resolve_maybe_relative_url};
+use super::uri::{get_server_api_address, resolve_maybe_relative_url};
 use super::{display_path, ClientInstall, LauncherPaths, ServerBuildInformation, ServerInfo};
 
 const ROBUST_MANIFEST_URLS: [&str; 2] = [
@@ -127,12 +127,9 @@ pub fn download_client_for_server_with_proxy_and_tokens(
         let executable_path = detect_client_executable(&extracted_dir)
             .with_context(|| format!("detecting executable in {}", display_path(&extracted_dir)))?;
 
-        let connect_address = derive_connect_address(server_address, info)?;
-
         return Ok(ClientInstall {
             install_dir,
             executable_path,
-            connect_address,
         });
     }
 
@@ -922,8 +919,6 @@ struct RobustModuleEntry {
 
 #[derive(Debug, Deserialize)]
 struct RobustModuleVersionEntry {
-    #[serde(default)]
-    insecure: Option<bool>,
     platforms: std::collections::HashMap<String, RobustBuildPlatformEntry>,
 }
 

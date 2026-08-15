@@ -1,6 +1,8 @@
 
 use std::collections::HashSet;
+
 use std::fs;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -514,10 +516,6 @@ fn blake2b_256_hex(data: &[u8]) -> String {
         let _ = write!(hex, "{b:02x}");
     }
     hex
-}
-
-pub fn hash_bytes_hex(data: &[u8]) -> String {
-    blake2b_256_hex(data)
 }
 
 fn response_is_zstd(response: &reqwest::blocking::Response) -> bool {
