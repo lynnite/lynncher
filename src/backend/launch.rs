@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use std::process::Command;
+use std::process::{Child, Command};
 
 use anyhow::{Context, Result};
 use walkdir::WalkDir;
@@ -17,7 +17,7 @@ pub fn launch_game_with_context(
     cfg: &LauncherConfig,
     selected_server: Option<&str>,
     server_info: Option<&ServerInfo>,
-) -> Result<String> {
+) -> Result<Child> {
     if cfg.game_executable.trim().is_empty() {
         anyhow::bail!("Game executable path is empty");
     }
@@ -169,14 +169,14 @@ pub fn launch_game_with_context(
         ensure_glfw_module_aliases(executable.parent())?;
     }
 
-    command.spawn().with_context(|| {
+    let child = command.spawn().with_context(|| {
         format!(
             "failed to launch executable {}",
             display_path(executable.as_path())
         )
     })?;
 
-    Ok(format!("Launched {}", display_path(executable.as_path())))
+    Ok(child)
 }
 
 fn push_build_cvar(command: &mut Command, name: &str, value: Option<&str>) {

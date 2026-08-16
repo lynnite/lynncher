@@ -27,7 +27,23 @@ fn default_pause_gifs_unfocused() -> bool {
     true
 }
 
+fn default_logo_text_only() -> bool {
+    false
+}
+
+fn default_font_size() -> f32 {
+    14.0
+}
+
 fn default_bg_scale() -> f32 {
+    1.0
+}
+
+fn default_language() -> String {
+    String::from("en")
+}
+
+fn default_item_alpha() -> f32 {
     1.0
 }
 
@@ -65,6 +81,8 @@ pub struct ColorScheme {
     pub item_r: u8,
     pub item_g: u8,
     pub item_b: u8,
+    #[serde(default = "default_item_alpha")]
+    pub item_alpha: f32,
     pub text_r: u8,
     pub text_g: u8,
     pub text_b: u8,
@@ -100,6 +118,7 @@ impl Default for ColorScheme {
             item_r: 0x33,
             item_g: 0x33,
             item_b: 0x33,
+            item_alpha: 1.0,
             text_r: 0xE6,
             text_g: 0xE6,
             text_b: 0xE6,
@@ -159,6 +178,14 @@ pub struct LauncherConfig {
     pub background_image_config: BackgroundImageConfig,
     #[serde(default)]
     pub color_scheme: ColorScheme,
+    #[serde(default)]
+    pub font_path: String,
+    #[serde(default = "default_logo_text_only")]
+    pub logo_text_only: bool,
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+    #[serde(default = "default_language")]
+    pub language: String,
     pub favorite_servers: Vec<String>,
     #[serde(default)]
     pub favorite_names: Vec<(String, String)>,
@@ -186,6 +213,10 @@ impl Default for LauncherConfig {
             pause_animations_unfocused: true,
             background_image_config: BackgroundImageConfig::default(),
             color_scheme: ColorScheme::default(),
+            font_path: String::new(),
+            logo_text_only: false,
+            font_size: 14.0,
+            language: String::from("en"),
             favorite_servers: Vec::new(),
             favorite_names: Vec::new(),
             accounts: Vec::new(),
