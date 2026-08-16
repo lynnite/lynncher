@@ -89,6 +89,7 @@
 
   "favorites.title": "收藏的服务器",
   "favorites.empty": "暂无收藏的服务器。",
+  "favorites.show_desc": "点击显示/隐藏描述",
   "favorites.connect": "连接",
   "favorites.rename": "重命名",
   "favorites.remove": "移除",

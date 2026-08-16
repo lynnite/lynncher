@@ -89,6 +89,7 @@
 
   "favorites.title": "Favorite servers",
   "favorites.empty": "No favorite servers yet.",
+  "favorites.show_desc": "Click to show/hide description",
   "favorites.connect": "Connect",
   "favorites.rename": "Rename",
   "favorites.remove": "Remove",
