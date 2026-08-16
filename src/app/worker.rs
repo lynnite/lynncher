@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::i18n::Localizer;
 use crate::backend::{
     account_key, active_account_for_auth, apply_acz_inferred_urls, auth_mode_disabled,
     build_content_database, derive_connect_address, download_and_install_content,
@@ -43,11 +44,17 @@ pub struct Connector {
     pub paths: LauncherPaths,
     pub cfg: LauncherConfig,
     feedback: SharedFeedback,
+    loc: Localizer,
 }
 
 impl Connector {
     pub fn new(paths: LauncherPaths, cfg: LauncherConfig, feedback: SharedFeedback) -> Self {
-        Self { paths, cfg, feedback }
+        let loc = Localizer::new(&cfg.language);
+        Self { paths, cfg, feedback, loc }
+    }
+
+    fn t(&self, key: &str, args: &[&str]) -> String {
+        self.loc.t(key, args)
     }
 
     fn set_status(&self, msg: impl Into<String>) {
@@ -159,6 +166,49 @@ impl Connector {
         }
     }
 
+    fn reconnect_loop<F>(&self, mut launch: F, initial_msg: String)
+    where
+        F: FnMut() -> anyhow::Result<std::process::Child>,
+    {
+        let mut first = true;
+        loop {
+            match launch() {
+                Ok(mut child) => {
+                    if first {
+                        self.set_status(initial_msg.clone());
+                        self.push_log(self.feedback_status());
+                        first = false;
+                    } else {
+                        self.set_status(self.t("status.reconnecting", &[]));
+                        self.push_log(self.feedback_status());
+                    }
+
+                    let _ = child.wait();
+                    self.clear_progress();
+                    if self.is_cancelled() || !self.cfg.auto_reconnect {
+                        break;
+                    }
+
+                    let delay_ms = self.cfg.auto_reconnect_delay_ms;
+                    self.set_status(self.t("status.reconnect_delay", &[&delay_ms.to_string()]));
+                    self.push_log(self.feedback_status());
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    if self.is_cancelled() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    self.push_log(if first {
+                        format!("Launch failed: {err:#}")
+                    } else {
+                        format!("Reconnect launch failed: {err:#}")
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
     pub fn connect(&self, address: &str, mut info: ServerInfo) {
         if let Some(build) = &info.build {
             info.build = apply_acz_inferred_urls(address, build).ok().or(info.build);
@@ -189,15 +239,15 @@ impl Connector {
             Ok(install) => {
                 if self.is_cancelled() {
                     self.remove_dir(&install.install_dir);
-                    self.set_status("Connection cancelled");
+                    self.set_status(self.t("status.cancelled", &[]));
                     self.push_log(self.feedback_status());
                     self.finish();
                     return;
                 }
 
-                self.set_status(format!(
-                    "Client downloaded to {}",
-                    install.install_dir.to_string_lossy()
+                self.set_status(self.t(
+                    "status.client_downloaded",
+                    &[&install.install_dir.to_string_lossy()],
                 ));
                 self.push_log(self.feedback_status());
 
@@ -220,16 +270,11 @@ impl Connector {
                     }
                 }
 
-                match launch_game_with_context(&runtime_cfg, Some(address), Some(&info)) {
-                    Ok(msg) => {
-                        self.set_status(msg);
-                        self.push_log(self.feedback_status());
-                    }
-                    Err(err) => {
-                        self.set_status(format!("Launch failed: {err:#}"));
-                        self.push_log(self.feedback_status());
-                    }
-                }
+                let launched_msg = self.t("status.launched", &[&runtime_cfg.game_executable]);
+                self.reconnect_loop(
+                    || launch_game_with_context(&runtime_cfg, Some(address), Some(&info)),
+                    launched_msg,
+                );
 
                 self.finish();
                 return;
@@ -238,7 +283,7 @@ impl Connector {
         };
 
         if self.is_cancelled() {
-            self.set_status("Connection cancelled");
+            self.set_status(self.t("status.cancelled", &[]));
             self.push_log(self.feedback_status());
             self.finish();
             return;
@@ -248,7 +293,7 @@ impl Connector {
             if let Some(engine_version) = build.engine_version.as_deref() {
                 match self.try_launch_via_loader(address, &info, engine_version) {
                     Ok(true) => {
-                        self.set_status("Launched client through SS14.Loader");
+                        self.set_status(self.t("status.launched_loader", &[]));
                         self.push_log(self.feedback_status());
                         self.finish();
                         
@@ -273,9 +318,9 @@ impl Connector {
         }
 
         if is_connection_cancelled(&download_err) {
-            self.set_status("Connection cancelled");
+            self.set_status(self.t("status.cancelled", &[]));
         } else {
-            self.set_status(format!("Client download failed: {download_err:#}"));
+            self.set_status(self.t("status.client_download_fail", &[&download_err.to_string()]));
         }
         self.push_log(self.feedback_status());
 
@@ -284,7 +329,7 @@ impl Connector {
 
     fn engine_fallback(&self, address: &str, info: &ServerInfo, engine_version: &str) {
         if self.is_cancelled() {
-            self.set_status("Connection cancelled");
+            self.set_status(self.t("status.cancelled", &[]));
             self.push_log(self.feedback_status());
             return;
         }
@@ -307,9 +352,9 @@ impl Connector {
 
                 let mut runtime_cfg = self.cfg.clone();
                 runtime_cfg.game_executable = engine_exe.to_string_lossy().into_owned();
-                self.set_status(format!(
-                    "Downloaded engine {} as fallback client",
-                    engine_version
+                self.set_status(self.t(
+                    "status.engine_fallback",
+                    &[&engine_version],
                 ));
                 self.push_log(self.feedback_status());
 
@@ -392,32 +437,22 @@ impl Connector {
                 };
 
                 if !has_content {
-                    self.set_status(
-                        "Engine fallback client has no game content installed; \
-                         cannot launch (bare Robust engine cannot boot to the game). \
-                         If the server uses the manifest/content-download protocol, \
-                         the content download failed. Check the log above.",
-                    );
+                    self.set_status(self.t("status.no_game_content", &[]));
                     self.push_log(self.feedback_status());
                     return;
                 }
 
                 self.push_log(if content_downloaded {
-                    String::from("Game content present; launching client.")
+                    self.t("status.game_content_present", &[])
                 } else {
-                    String::from("Game content present (no manifest required); launching client.")
+                    self.t("status.game_content_present_nm", &[])
                 });
 
-                match launch_game_with_context(&runtime_cfg, Some(address), Some(&info)) {
-                    Ok(msg) => {
-                        self.set_status(msg);
-                        self.push_log(self.feedback_status());
-                    }
-                    Err(err) => {
-                        self.set_status(format!("Engine fallback launch failed: {err:#}"));
-                        self.push_log(self.feedback_status());
-                    }
-                }
+                let launched_msg = self.t("status.launched", &[&runtime_cfg.game_executable]);
+                self.reconnect_loop(
+                    || launch_game_with_context(&runtime_cfg, Some(address), Some(&info)),
+                    launched_msg,
+                );
             }
             Err(err) => {
                 self.push_log(format!(
@@ -435,17 +470,17 @@ impl Connector {
         engine_version: &str,
     ) -> anyhow::Result<bool> {
         if self.is_cancelled() {
-            self.set_status("Connection cancelled");
+            self.set_status(self.t("status.cancelled", &[]));
             self.push_log(self.feedback_status());
             return Ok(false);
         }
 
         let proxy = self.hub_options().proxy_url;
 
-        self.set_progress(0.1, "Acquiring SS14.Loader...");
+        self.set_progress(0.1, self.t("progress.loader", &[]));
         let loader = ensure_loader_installed(&self.paths, proxy.as_deref())?;
 
-        self.set_progress(0.3, "Downloading Robust engine...");
+        self.set_progress(0.3, self.t("progress.engine", &[]));
         let (engine_zip, signature) =
             download_engine_zip_for_loader(&self.paths, engine_version, proxy.as_deref())?;
 
@@ -466,10 +501,10 @@ impl Connector {
         let mut have_content = false;
 
         if let Some(build) = &info.build {
-            self.set_progress(0.5, "Downloading game content...");
+            self.set_progress(0.5, self.t("progress.content", &[]));
             match download_content_entries(&self.paths, address, build, proxy.as_deref()) {
                 Ok(Some((cache_dir, files, manifest_hash))) => {
-                    self.set_progress(0.75, "Building content database...");
+                    self.set_progress(0.75, self.t("progress.content_db", &[]));
                     let entries: Vec<ContentDbEntry> = files
                         .into_iter()
                         .map(|f| ContentDbEntry {
@@ -501,7 +536,7 @@ impl Connector {
             return Ok(false);
         }
 
-        self.set_progress(0.9, "Launching client...");
+        self.set_progress(0.9, self.t("progress.launch", &[]));
 
         self.push_log(format!(
             "Launching SS14.Loader for engine_version={engine_version} (signature={})",
@@ -586,7 +621,7 @@ impl Connector {
                 break;
             }
             let delay_ms = self.cfg.auto_reconnect_delay_ms;
-            self.set_status(format!("Disconnected; reconnecting in {delay_ms} ms"));
+            self.set_status(self.t("status.reconnect_delay", &[&delay_ms.to_string()]));
             self.push_log(self.feedback_status());
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             if self.is_cancelled() {
@@ -595,7 +630,7 @@ impl Connector {
             match launch_game_via_loader(&spec) {
                 Ok(new_child) => {
                     child = new_child;
-                    self.set_status("Reconnecting...");
+                    self.set_status(self.t("status.reconnecting", &[]));
                     self.push_log(self.feedback_status());
                 }
                 Err(err) => {

@@ -17,14 +17,17 @@ impl LauncherApp {
         let fg = egui::Color32::from_rgb(cs.text_r, cs.text_g, cs.text_b);
         let sub_text = egui::Color32::from_rgb(cs.sub_text_r, cs.sub_text_g, cs.sub_text_b);
         let button = egui::Color32::from_rgb(cs.button_r, cs.button_g, cs.button_b);
-        let hover = egui::Color32::from_rgb(cs.hover_r, cs.hover_g, cs.hover_b);
         let accent = egui::Color32::from_rgb(cs.accent_r, cs.accent_g, cs.accent_b);
 
-        if self.style_applied && self.last_scheme.as_ref() == Some(&self.cfg.color_scheme) {
+        if self.style_applied
+            && self.last_scheme.as_ref() == Some(&self.cfg.color_scheme)
+            && self.last_font_size == self.cfg.font_size
+        {
             return;
         }
         self.style_applied = true;
         self.last_scheme = Some(cs.clone());
+        self.last_font_size = self.cfg.font_size;
 
         let mut style = (*ctx.style()).clone();
 
@@ -48,15 +51,21 @@ impl LauncherApp {
             cs.footer_g,
             cs.footer_b,
         );
-        style.visuals.faint_bg_color = egui::Color32::from_rgb(cs.item_r, cs.item_g, cs.item_b);
+        let alpha = (cs.item_alpha.clamp(0.0, 1.0) * 255.0) as u8;
+        let button_a = egui::Color32::from_rgba_unmultiplied(cs.button_r, cs.button_g, cs.button_b, alpha);
+        let hover_a = egui::Color32::from_rgba_unmultiplied(cs.hover_r, cs.hover_g, cs.hover_b, alpha);
+        let accent_a = egui::Color32::from_rgba_unmultiplied(cs.accent_r, cs.accent_g, cs.accent_b, alpha);
+        let item_a = egui::Color32::from_rgba_unmultiplied(cs.item_r, cs.item_g, cs.item_b, alpha);
+
+        style.visuals.faint_bg_color = item_a;
         style.visuals.code_bg_color = popup;
 
         style.visuals.widgets.noninteractive.bg_fill = bg;
-        style.visuals.widgets.inactive.bg_fill = button;
-        style.visuals.widgets.hovered.bg_fill = hover;
-        style.visuals.widgets.active.bg_fill = accent;
-        style.visuals.widgets.open.bg_fill = button;
-        style.visuals.widgets.inactive.weak_bg_fill = button;
+        style.visuals.widgets.inactive.bg_fill = button_a;
+        style.visuals.widgets.hovered.bg_fill = hover_a;
+        style.visuals.widgets.active.bg_fill = accent_a;
+        style.visuals.widgets.open.bg_fill = button_a;
+        style.visuals.widgets.inactive.weak_bg_fill = button_a;
 
         style.visuals.widgets.inactive.fg_stroke.color = fg;
         style.visuals.widgets.hovered.fg_stroke.color = fg;
@@ -79,6 +88,28 @@ impl LauncherApp {
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.indent = 12.0;
 
+        let base = self.cfg.font_size.clamp(8.0, 40.0);
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::proportional(base * 0.85),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::proportional(base),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::proportional(base),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::proportional(base * 1.4),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::monospace(base * 0.9),
+        );
+
         ctx.set_style(style);
     }
 
@@ -99,7 +130,7 @@ impl LauncherApp {
                 .iter()
                 .find(|acc| account_key(&acc.auth_server, &acc.user_id) == key)
                 .map(|acc| format!("{} @ {}", acc.username, acc.auth_server))
-                .unwrap_or_else(|| String::from("Unknown account")),
+                .unwrap_or_else(|| self.t("account.unknown", &[])),
             None => String::from("None"),
         }
     }
@@ -161,7 +192,8 @@ impl LauncherApp {
             .then(|| self.cfg.proxy_url.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        self.status = String::from("Downloading the compiled update for this OS...");
+        let s1 = self.t("status.downloading_update", &[]);
+        self.status = s1;
         self.push_log(self.status.clone());
 
         let result = self.update_action_result.clone();
@@ -170,6 +202,7 @@ impl LauncherApp {
         std::thread::spawn(move || {
             let msg = match download_and_apply_update(proxy_clone.as_deref()) {
                 Ok(()) => {
+                    // resolved by caller via status.update_success
                     String::from("Launcher updated successfully. Restart the launcher.")
                 }
                 Err(err) => format!("Launcher update: {err:#}"),
@@ -186,8 +219,18 @@ impl LauncherApp {
             r.take()
         };
         if let Some(msg) = msg {
-            self.status = msg.clone();
-            self.push_log(msg);
+            if msg == "Launcher updated successfully. Restart the launcher." {
+                let m = self.t("status.update_success", &[]);
+                self.status = m;
+                self.push_log(self.status.clone());
+            } else if let Some(rest) = msg.strip_prefix("Launcher update: ") {
+                let m = self.t("status.update_error", &[rest]);
+                self.status = m;
+                self.push_log(self.status.clone());
+            } else {
+                self.status = msg.clone();
+                self.push_log(msg);
+            }
         }
     }
 
@@ -210,12 +253,20 @@ impl LauncherApp {
             .clone()
     }
 
-    pub(crate) fn release_check_error(&self) -> Option<String> {
-        self.update_check
+    pub(crate) fn release_check_error_localized(&self) -> Option<String> {
+        let raw = self
+            .update_check
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .error
-            .clone()
+            .clone()?;
+        if raw == "Could not determine latest release" {
+            return Some(self.t("status.update_available", &[]));
+        }
+        if let Some(rest) = raw.strip_prefix("Update check failed: ") {
+            return Some(self.t("status.update_check_failed", &[rest]));
+        }
+        Some(raw)
     }
 
     pub(crate) fn release_checking(&self) -> bool {
@@ -239,11 +290,13 @@ impl LauncherApp {
             Ok(mut list) => {
                 list.sort_by(|a, b| b.status_data.players.cmp(&a.status_data.players));
                 self.servers = list;
-                self.status = format!("Loaded {} servers from hub", self.servers.len());
+                let msg = self.t("status.hub_server_count", &[&self.servers.len().to_string()]);
+                self.status = msg;
                 self.push_log(self.status.clone());
             }
             Err(err) => {
-                self.status = format!("Failed to load hub servers: {err:#}");
+                let msg = self.t("status.hub_server_fail", &[&err.to_string()]);
+                self.status = msg;
                 self.push_log(self.status.clone());
             }
         }
@@ -274,7 +327,8 @@ impl LauncherApp {
                 fb.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }
-        self.status = String::from("Cancelling connection and cleaning up partial downloads...");
+        let s1 = self.t("status.cancelling", &[]);
+        self.status = s1;
         self.push_log(self.status.clone());
     }
 
@@ -324,7 +378,8 @@ impl LauncherApp {
         match fetch_server_info_from_hub_with_options(&self.cfg.hub_server_url, address, options) {
             Ok(info) => self.start_background_connect(address, info),
             Err(err) => {
-                self.status = format!("Failed to get server info from hub: {err:#}");
+                let msg = self.t("status.server_info_fail", &[&err.to_string()]);
+                self.status = msg;
                 self.push_log(self.status.clone());
             }
         }
@@ -335,7 +390,8 @@ impl LauncherApp {
         match fetch_server_info_direct_with_proxy(target, proxy.as_deref()) {
             Ok(info) => self.start_background_connect(target, info),
             Err(err) => {
-                self.status = format!("Direct server info failed: {err:#}");
+                let msg = self.t("status.direct_info_fail", &[&err.to_string()]);
+                self.status = msg;
                 self.push_log(self.status.clone());
             }
         }
@@ -357,11 +413,13 @@ impl LauncherApp {
         {
             self.cfg.favorite_servers.remove(idx);
             self.cfg.favorite_names.retain(|(a, _)| a != address);
-            self.status = format!("Removed favorite: {address}");
+            let msg = self.t("status.favorite_removed", &[&address.to_string()]);
+            self.status = msg;
             self.push_log(self.status.clone());
         } else {
             self.cfg.favorite_servers.push(address.to_string());
-            self.status = format!("Added favorite: {address}");
+            let msg = self.t("status.favorite_added", &[&address.to_string()]);
+            self.status = msg;
             self.push_log(self.status.clone());
         }
     }
@@ -458,7 +516,8 @@ impl LauncherApp {
             }
         }
         let _ = std::fs::remove_file(clients.join("robust-manifest.json"));
-        self.status = format!("Cleared installed engines ({removed} items)");
+        let msg = self.t("status.clear_engines", &[&removed.to_string()]);
+        self.status = msg;
         self.push_log(self.status.clone());
     }
 
@@ -477,7 +536,8 @@ impl LauncherApp {
             }
         }
         let _ = std::fs::remove_file(clients.join("content.db"));
-        self.status = format!("Cleared installed server content ({removed} items)");
+        let msg = self.t("status.clear_content", &[&removed.to_string()]);
+        self.status = msg;
         self.push_log(self.status.clone());
     }
 
@@ -520,7 +580,8 @@ impl LauncherApp {
 
         self.auto_update_initiated = true;
         if self.update_available() == Some(true) {
-            self.push_log("Automatic update available; downloading at startup.");
+            let s1 = self.t("status.auto_update", &[]);
+            self.push_log(s1);
             self.start_update();
         }
     }

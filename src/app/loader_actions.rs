@@ -17,10 +17,10 @@ impl LauncherApp {
     ) -> anyhow::Result<bool> {
         let proxy = self.hub_options().proxy_url;
 
-        self.set_progress(0.1, "Acquiring SS14.Loader...");
+        self.set_progress(0.1, self.t("progress.loader", &[]));
         let loader = ensure_loader_installed(&self.paths, proxy.as_deref())?;
 
-        self.set_progress(0.3, "Downloading Robust engine...");
+        self.set_progress(0.3, self.t("progress.engine", &[]));
         let (engine_zip, signature) =
             download_engine_zip_for_loader(&self.paths, engine_version, proxy.as_deref())?;
 
@@ -41,10 +41,10 @@ impl LauncherApp {
         let mut have_content = false;
 
         if let Some(build) = &info.build {
-            self.set_progress(0.5, "Downloading game content...");
+            self.set_progress(0.5, self.t("progress.content", &[]));
             match download_content_entries(&self.paths, address, build, proxy.as_deref()) {
                 Ok(Some((cache_dir, files, manifest_hash))) => {
-                    self.set_progress(0.75, "Building content database...");
+                    self.set_progress(0.75, self.t("progress.content_db", &[]));
                     let entries: Vec<ContentDbEntry> = files
                         .into_iter()
                         .map(|f| ContentDbEntry {
@@ -76,7 +76,7 @@ impl LauncherApp {
             return Ok(false);
         }
 
-        self.set_progress(0.9, "Launching client...");
+        self.set_progress(0.9, self.t("progress.launch", &[]));
 
         let mut build_cvars = Vec::new();
         if let Some(build) = &info.build {

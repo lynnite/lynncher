@@ -1,12 +1,14 @@
 use eframe::egui;
 
 use crate::backend::{
-    fetch_server_info_from_hub_with_options, list_sideloaded_extensions, load_config_from_path,
+    fetch_server_info_direct_with_proxy, fetch_server_info_from_hub_with_options,
+    list_sideloaded_extensions, load_config_from_path,
     normalize_base_url, remove_sideloaded_extension, save_config, sideload_extension_bundle,
     ColorScheme, HubServerEntry, ServerInfo,
 };
 
 use super::LauncherApp;
+use super::i18n::Localizer;
 
 const GOLD: egui::Color32 = egui::Color32::from_rgb(0xC8, 0xC8, 0xC8);
 const SUB_TEXT: egui::Color32 = egui::Color32::from_rgb(0x8F, 0x8F, 0x8F);
@@ -67,9 +69,46 @@ fn format_duration(total: u64) -> String {
     }
 }
 
+fn canonical_tag(prefix: &str, value: &str) -> String {
+    match prefix {
+        "rp" => match value {
+            "low" | "lrp" => "low",
+            "med" | "medium" | "mrp" => "med",
+            "high" | "hrp" | "hard" | "very_high" => "high",
+            "none" => "none",
+            other => other,
+        }
+        .to_string(),
+        "region" => match value {
+            "am_n_c" | "am_n_e" | "am_n_w" | "na" | "ca" => "na",
+            "am_s_e" | "am_s_w" | "am_s_s" | "sa" | "br" => "sa",
+            "eu" | "eu_w" | "eu_e" | "es" => "eu",
+            "luna" => "luna",
+            other => other,
+        }
+        .to_string(),
+        _ => value.to_string(),
+    }
+}
+
+fn server_tag_matches(filter_tag: &str, server_tags: &[String]) -> bool {
+    let Some((prefix, canon)) = filter_tag.split_once(':') else {
+        return server_tags.iter().any(|t| t == filter_tag);
+    };
+    let needle = format!("{prefix}:");
+    server_tags.iter().any(|t| {
+        if let Some(val) = t.strip_prefix(&needle) {
+            canonical_tag(prefix, val) == canon
+        } else {
+            false
+        }
+    })
+}
+
 fn collect_distinct_tags(
     servers: &[crate::backend::HubServerEntry],
     prefix: &str,
+    loc: &Localizer,
 ) -> Vec<(String, String)> {
     let mut seen: Vec<(String, String)> = Vec::new();
     for server in servers {
@@ -78,8 +117,9 @@ fn collect_distinct_tags(
                 let Some(value) = tag.strip_prefix(&format!("{prefix}:")) else {
                     continue;
                 };
-                let key = format!("{prefix}:{value}");
-                let label = tag_label(prefix, value);
+                let canon = canonical_tag(prefix, value);
+                let key = format!("{prefix}:{canon}");
+                let label = tag_label(prefix, &canon, loc);
                 if !seen.iter().any(|(k, _)| k == &key) {
                     seen.push((key, label));
                 }
@@ -90,46 +130,26 @@ fn collect_distinct_tags(
     seen
 }
 
-fn tag_label(prefix: &str, value: &str) -> String {
+fn tag_label(prefix: &str, value: &str, loc: &Localizer) -> String {
+    let mut key = String::from(value);
     match prefix {
-        "region" => region_short(value),
-        "rp" => match value {
-            "none" => String::from("None"),
-            "low" => String::from("Low"),
-            "medium" => String::from("Medium"),
-            "high" => String::from("High"),
-            other => other.to_string(),
-        },
-        "language" => value.to_uppercase(),
-        _ => value.to_string(),
+        "region" => {
+            key.insert_str(0, "region.");
+            return loc.t(&key, &[]);
+        }
+        "rp" => {
+            key.insert_str(0, "filter.");
+            key = match value {
+                "none" | "low" | "lrp" | "med" | "medium" | "mrp" | "high" | "hrp" | "hard"
+                | "very_high" => key,
+                other => other.to_string(),
+            };
+            return loc.t(&key, &[]);
+        }
+        "lang" | "language" => return value.to_uppercase(),
+        _ => {}
     }
-}
-
-fn region_short(code: &str) -> String {
-    match code {
-        "eu_w" => String::from("EU West"),
-        "eu_e" => String::from("EU East"),
-        "am_n_e" => String::from("NA East"),
-        "am_n_c" => String::from("NA Central"),
-        "am_n_w" => String::from("NA West"),
-        "am_s_e" => String::from("SA East"),
-        "am_s_w" => String::from("SA West"),
-        "am_s_s" => String::from("SA South"),
-        "c_am" => String::from("Central America"),
-        "af_c" => String::from("Africa Central"),
-        "af_n" => String::from("Africa North"),
-        "af_s" => String::from("Africa South"),
-        "an" => String::from("Antarctica"),
-        "as_e" => String::from("Asia East"),
-        "as_s_e" => String::from("Asia Southeast"),
-        "as_n" => String::from("Asia North"),
-        "in" => String::from("India"),
-        "me" => String::from("Middle East"),
-        "mo" => String::from("The Moon"),
-        "oc" => String::from("Oceania"),
-        "gl" => String::from("Greenland"),
-        other => other.to_string(),
-    }
+    value.to_string()
 }
 
 impl LauncherApp {
@@ -139,64 +159,63 @@ impl LauncherApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_space(8.0);
-                nano_heading(ui, "Favorite servers");
+                nano_heading(ui, self.t("favorites.title", &[]));
         ui.separator();
 
         if self.cfg.favorite_servers.is_empty() {
-            ui.label("No favorite servers yet.");
+            let t_empty = self.t("favorites.empty", &[]);
+            ui.label(t_empty);
         } else {
             let mut connect_target: Option<String> = None;
             let mut remove_target: Option<String> = None;
             let mut rename_target: Option<String> = None;
+            let mut desc_toggle_target: Option<String> = None;
+            let t_connect = self.t("favorites.connect", &[]);
+            let t_rename = self.t("favorites.rename", &[]);
+            let t_remove = self.t("favorites.remove", &[]);
+            let t_offline = self.t("favorites.offline", &[]);
+            let t_no_desc = self.t("favorites.no_desc", &[]);
 
             self.ensure_favorite_infos();
 
             egui::ScrollArea::vertical()
                 .id_salt("favorites_list")
                 .max_height(260.0)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .show(ui, |ui| {
-                let item_col = egui::Color32::from_rgb(
+                let item_alpha = (self.cfg.color_scheme.item_alpha.clamp(0.0, 1.0) * 255.0) as u8;
+                let item_col = egui::Color32::from_rgba_unmultiplied(
                     self.cfg.color_scheme.item_r,
                     self.cfg.color_scheme.item_g,
                     self.cfg.color_scheme.item_b,
+                    item_alpha,
                 );
                 for address in self.cfg.favorite_servers.clone() {
                     let (name, desc) = self.favorite_summary(&address);
+                    let show_desc = *self.favorite_desc_visible.get(&address).unwrap_or(&false);
                     let server_entry = self
                         .servers
                         .iter()
                         .find(|s| s.address.eq_ignore_ascii_case(&address));
-                    egui::Frame::none()
+                    let frame_resp = egui::Frame::none()
                         .fill(item_col)
                         .inner_margin(egui::Margin::symmetric(8.0, 2.0))
                         .show(ui, |ui| {
-                            let summary = if desc.is_empty() {
-                                format!("{}\n{}", name, address)
-                            } else {
-                                format!("{}\n{}\n{}", name, address, desc)
-                            };
-                            let resp = ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    if desc.is_empty() {
-                                        ui.label(egui::RichText::new(&name).strong())
-                                            .on_hover_text(&summary);
-                                        ui.label(
-                                            egui::RichText::new(&address)
-                                                .small()
-                                                .weak(),
-                                        )
-                                        .on_hover_text(&summary);
-                                    } else {
-                                        ui.label(egui::RichText::new(&name).strong())
-                                            .on_hover_text(&summary);
-                                        ui.label(
-                                            egui::RichText::new(&desc)
-                                                .small()
-                                                .weak(),
-                                        )
-                                        .on_hover_text(&summary);
-                                    }
-                                    ui.horizontal(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&name).strong());
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::TOP),
+                                    |ui| {
+                                        if ui.small_button(&t_connect).clicked() {
+                                            connect_target = Some(address.clone());
+                                        }
+                                        if ui.small_button(&t_rename).clicked() {
+                                            rename_target = Some(address.clone());
+                                        }
+                                        if ui.small_button(&t_remove).clicked() {
+                                            remove_target = Some(address.clone());
+                                        }
                                         let round_time = server_entry
                                             .map(format_round_time)
                                             .unwrap_or_else(|| String::from("—"));
@@ -215,40 +234,49 @@ impl LauncherApp {
                                                 .small()
                                                 .strong()
                                                 .color(GOLD),
-                                            )
-                                            .on_hover_text("Players currently online / soft max");
+                                            );
                                         } else {
                                             ui.label(
-                                                egui::RichText::new("offline")
+                                                egui::RichText::new(&t_offline)
                                                     .small()
                                                     .weak(),
-                                            )
-                                            .on_hover_text(
-                                                "No live status available for this server",
                                             );
-                                        }
-                                    });
-                                });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui.small_button("Connect").clicked() {
-                                            connect_target = Some(address.clone());
-                                        }
-                                        if ui.small_button("Rename").clicked() {
-                                            rename_target = Some(address.clone());
-                                        }
-                                        if ui.small_button("Remove").clicked() {
-                                            remove_target = Some(address.clone());
                                         }
                                     },
                                 );
                             });
-                            let _ = resp;
+
+                            if show_desc {
+                                ui.label(
+                                    egui::RichText::new(self.t("favorites.ip", &[&address]))
+                                        .small()
+                                        .weak(),
+                                );
+                                if desc.is_empty() {
+                                    ui.label(egui::RichText::new(&t_no_desc).small().weak());
+                                } else {
+                                    ui.label(egui::RichText::new(&desc).small().weak());
+                                }
+                            }
                         });
+                    if ui
+                        .interact(
+                            frame_resp.response.rect,
+                            ui.id().with(("fav_toggle", &address)),
+                            egui::Sense::click(),
+                        )
+                        .clicked()
+                    {
+                        desc_toggle_target = Some(address.clone());
+                    }
                     ui.add_space(1.0);
                 }
             });
+
+            if let Some(address) = desc_toggle_target {
+                let cur = self.favorite_desc_visible.get(&address).copied().unwrap_or(false);
+                self.favorite_desc_visible.insert(address, !cur);
+            }
 
             if let Some(address) = connect_target {
                 self.connect_direct(&address);
@@ -270,13 +298,15 @@ impl LauncherApp {
         ui.add_space(8.0);
 
         ui.separator();
-        ui.label("Event log");
+        let t_event_log = self.t("favorites.event_log", &[]);
+        let t_no_events = self.t("favorites.no_events", &[]);
+        ui.label(t_event_log);
         egui::ScrollArea::vertical()
             .id_salt("event_log")
             .max_height(180.0)
             .show(ui, |ui| {
             if self.logs.is_empty() {
-                ui.label("No events yet.");
+                ui.label(t_no_events);
             } else {
                 for line in &self.logs {
                     ui.label(line);
@@ -313,7 +343,7 @@ impl LauncherApp {
                         s.status_data
                             .tags
                             .as_deref()
-                            .map(|t| t.iter().any(|x| x == wanted))
+                            .map(|t| server_tag_matches(wanted, t))
                             .unwrap_or(false)
                     })
             })
@@ -325,8 +355,15 @@ impl LauncherApp {
         if self.hub_filters_visible {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(190.0);
-                    self.draw_server_filters(ui, filtered.len());
+                    ui.set_width(200.0);
+                    let avail_h = (ui.available_height() - 12.0).max(120.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("server_filters_scroll")
+                        .auto_shrink([false, true])
+                        .max_height(avail_h)
+                        .show(ui, |ui| {
+                            self.draw_server_filters(ui, filtered.len());
+                        });
                 });
                 ui.separator();
                 ui.vertical(|ui| {
@@ -390,18 +427,19 @@ impl LauncherApp {
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
+                    let t_search_hint = self.t("hub.search_hint", &[]);
+                    let t_filters = self.t(
+                        "hub.filters_count",
+                        &[&filtered_len.to_string(), &self.servers.len().to_string()],
+                    );
+                    let t_refresh = self.t("hub.refresh", &[]);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.hub_search_query)
-                            .hint_text("Search For Servers…")
+                            .hint_text(t_search_hint)
                             .desired_width((ui.available_width() - 180.0).max(120.0)),
                     );
-                    let filters_label = format!(
-                        "Filters ({}/{})",
-                        filtered_len,
-                        self.servers.len()
-                    );
-                    ui.toggle_value(&mut self.hub_filters_visible, filters_label);
-                    if ui.button("⟳").on_hover_text("Refresh").clicked() {
+                    ui.toggle_value(&mut self.hub_filters_visible, t_filters);
+                    if ui.button("⟳").on_hover_text(t_refresh).clicked() {
                         refresh = true;
                     }
                 });
@@ -430,7 +468,7 @@ impl LauncherApp {
                         s.status_data
                             .tags
                             .as_deref()
-                            .map(|t| t.iter().any(|x| x == wanted))
+                            .map(|t| server_tag_matches(wanted, t))
                             .unwrap_or(false)
                     })
             })
@@ -454,21 +492,24 @@ impl LauncherApp {
             .id_salt("server_table")
             .max_height(table_h)
             .show(ui, |ui| {
-            let item_col = egui::Color32::from_rgb(
+            let item_alpha = (self.cfg.color_scheme.item_alpha.clamp(0.0, 1.0) * 255.0) as u8;
+            let item_col = egui::Color32::from_rgba_unmultiplied(
                 self.cfg.color_scheme.item_r,
                 self.cfg.color_scheme.item_g,
                 self.cfg.color_scheme.item_b,
+                item_alpha,
             );
-            let accent_col = egui::Color32::from_rgb(
+            let accent_col = egui::Color32::from_rgba_unmultiplied(
                 self.cfg.color_scheme.accent_r,
                 self.cfg.color_scheme.accent_g,
                 self.cfg.color_scheme.accent_b,
+                item_alpha,
             );
             if servers.is_empty() {
                 let status = if self.servers.is_empty() {
-                    "There are no public servers. Ensure your hub configuration is correct. Or try refreshing."
+                    self.t("hub.no_public", &[])
                 } else {
-                    "No servers match your search or filter settings."
+                    self.t("hub.no_match", &[])
                 };
                 ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
@@ -478,12 +519,13 @@ impl LauncherApp {
             }
 
             for server in servers {
+                let t_unnamed = self.t("hub.unnamed", &[]);
                 let name = server
                     .status_data
                     .name
                     .as_deref()
                     .filter(|s| !s.trim().is_empty())
-                    .unwrap_or("Unnamed server");
+                    .unwrap_or(&t_unnamed);
 
                 let is_selected = selected_address_current
                     .as_deref()
@@ -542,7 +584,8 @@ impl LauncherApp {
                                 egui::vec2(80.0, 18.0),
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.button("Connect").clicked() {
+                                    let t_connect = self.t("hub.connect", &[]);
+                                    if ui.button(t_connect).clicked() {
                                         *connect_target = Some(server.address.clone());
                                     }
                                 },
@@ -552,45 +595,68 @@ impl LauncherApp {
                         if is_selected {
                             if let Some(info) = selected_info_current {
                                 ui.separator();
-                                ui.label(format!(
-                                    "Description: {}",
-                                    info.desc.clone().unwrap_or_else(|| String::from("No description"))
-                                ));
+                                let no_desc = self.t("hub.description_no", &[]);
+                                let t_desc = self.t(
+                                    "hub.description",
+                                    &[&info.desc.clone().unwrap_or_else(|| no_desc)],
+                                );
+                                ui.label(t_desc);
 
+                                let t_social = self.t("hub.social_links", &[]);
+                                let t_no_links = self.t("hub.no_links", &[]);
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
-                                        ui.label("Social links");
+                                        ui.label(t_social);
                                         if let Some(links) = &info.links {
                                             if links.is_empty() {
-                                                ui.label("No links");
+                                                ui.label(t_no_links);
                                             } else {
-                                                ui.horizontal_wrapped(|ui| {
-                                                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                                                    for link in links {
-                                                        let caption =
-                                                            if link.name.chars().count() > 18 {
-                                                                let short = link.name
-                                                                    .chars()
-                                                                    .take(18)
-                                                                    .collect::<String>();
-                                                                format!("{short}...")
-                                                            } else {
-                                                                link.name.clone()
-                                                            };
-                                                        if ui
-                                                            .add_sized([120.0, 22.0], egui::Button::new(caption))
-                                                            .clicked()
-                                                        {
-                                                            ui.ctx().open_url(egui::output::OpenUrl {
-                                                                url: link.url.clone(),
-                                                                new_tab: true,
-                                                            });
-                                                        }
+                                                let btn_w = 120.0;
+                                                let btn_h = 22.0;
+                                                let spacing = 6.0;
+                                                let avail = ui.available_width();
+                                                let per_row = ((avail + spacing) / (btn_w + spacing)).floor().max(1.0) as usize;
+                                                let row_start = ui.cursor().left_top();
+                                                let max_x = row_start.x + avail;
+                                                let mut x = row_start.x;
+                                                let mut y = row_start.y;
+                                                let mut placed = 0usize;
+                                                for link in links {
+                                                    if placed > 0 && placed % per_row == 0 {
+                                                        x = row_start.x;
+                                                        y += btn_h + spacing;
                                                     }
-                                                });
+                                                    let caption =
+                                                        if link.name.chars().count() > 18 {
+                                                            let short = link.name
+                                                                .chars()
+                                                                .take(18)
+                                                                .collect::<String>();
+                                                            format!("{short}...")
+                                                        } else {
+                                                            link.name.clone()
+                                                        };
+                                                    let rect = egui::Rect::from_min_size(
+                                                        egui::pos2(x.min(max_x), y),
+                                                        egui::vec2(btn_w, btn_h),
+                                                    );
+                                                    if ui.put(rect, egui::Button::new(caption)).clicked() {
+                                                        ui.ctx().open_url(egui::output::OpenUrl {
+                                                            url: link.url.clone(),
+                                                            new_tab: true,
+                                                        });
+                                                    }
+                                                    x += btn_w + spacing;
+                                                    placed += 1;
+                                                }
+                                                let used_h = (y + btn_h - row_start.y).max(1.0);
+                                                ui.advance_cursor_after_rect(egui::Rect::from_min_size(
+                                                    row_start,
+                                                    egui::vec2(1.0, used_h),
+                                                ));
                                             }
                                         } else {
-                                            ui.label("No links");
+                                            ui.label(t_no_links);
                                         }
                                     });
 
@@ -599,9 +665,9 @@ impl LauncherApp {
                                             .clone()
                                             .unwrap_or_else(|| String::from("(none)"));
                                         let label = if self.is_favorite(&selected_address) {
-                                            "Unfavorite"
+                                            self.t("hub.unfavorite", &[])
                                         } else {
-                                            "Favorite"
+                                            self.t("hub.favorite", &[])
                                         };
                                         if ui.button(label).clicked() {
                                             *favorite_target = Some(selected_address);
@@ -617,44 +683,50 @@ impl LauncherApp {
     }
 
     fn draw_server_filters(&mut self, ui: &mut egui::Ui, _filtered_len: usize) {
+        let t_filters = self.t("hub.filters", &[]);
+        let t_close = self.t("hub.close_filters", &[]);
+        let t_language = self.t("hub.language", &[]);
+        let t_region = self.t("hub.region", &[]);
+        let t_roleplay = self.t("hub.roleplay", &[]);
+        let t_active = self.t("hub.active_filters", &[]);
+        let t_clear = self.t("hub.clear_all_filters", &[]);
+
         ui.horizontal(|ui| {
-            nano_heading(ui, "Filters");
+            nano_heading(ui, t_filters);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("\u{2715}").on_hover_text("Close filters").clicked() {
+                if ui.button("\u{2715}").on_hover_text(t_close).clicked() {
                     self.hub_filters_visible = false;
                 }
             });
         });
         ui.separator();
 
-        let languages = collect_distinct_tags(&self.servers, "language");
-        let regions = collect_distinct_tags(&self.servers, "region");
-        let rps = collect_distinct_tags(&self.servers, "rp");
+        let loc = &self.localizer;
+        let languages = collect_distinct_tags(&self.servers, "lang", loc);
+        let regions = collect_distinct_tags(&self.servers, "region", loc);
+        let rps = collect_distinct_tags(&self.servers, "rp", loc);
 
-        ui.add_space(6.0);
-        self.filter_combo(ui, "Language", &languages, "language");
-
-        ui.add_space(6.0);
-        self.filter_combo(ui, "Region", &regions, "region");
-
-        ui.add_space(6.0);
-        self.filter_combo(ui, "Role-play level", &rps, "rp");
+        self.draw_filter_category(ui, &t_language, &languages, "lang");
+        ui.separator();
+        self.draw_filter_category(ui, &t_region, &regions, "region");
+        ui.separator();
+        self.draw_filter_category(ui, &t_roleplay, &rps, "rp");
 
         if !self.hub_filter_tags.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Active filters").strong().small());
+            ui.label(egui::RichText::new(&t_active).strong().small());
             for tag in &self.hub_filter_tags {
                 ui.label(egui::RichText::new(format!("\u{2022} {tag}")).small());
             }
         }
 
         ui.add_space(12.0);
-        if ui.button("Clear all filters").clicked() {
+        if ui.button(t_clear).clicked() {
             self.hub_filter_tags.clear();
         }
     }
 
-    fn filter_combo(
+    fn draw_filter_category(
         &mut self,
         ui: &mut egui::Ui,
         label: &str,
@@ -662,78 +734,218 @@ impl LauncherApp {
         prefix: &str,
     ) {
         let prefix_tag = format!("{prefix}:");
-        let current = self
-            .hub_filter_tags
-            .iter()
-            .find_map(|t| options.iter().find(|(k, _)| k == t));
 
+        ui.add_space(4.0);
         ui.label(egui::RichText::new(label).strong());
-        let selected_text = current
-            .map(|(_, disp)| disp.as_str())
-            .unwrap_or("Any");
-        egui::ComboBox::from_id_salt(format!("filter_{label}"))
-            .selected_text(selected_text)
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                let clear_category = ui
-                    .selectable_label(current.is_none(), "Any")
-                    .on_hover_text("Show all servers regardless of this category")
-                    .clicked();
-                if clear_category {
-                    self.hub_filter_tags.retain(|t| !t.starts_with(&prefix_tag));
-                }
-                for (key, disp) in options {
-                    let is_sel = current.map(|(k, _)| k == key).unwrap_or(false);
-                    if ui.selectable_label(is_sel, disp).clicked() {
-                        self.hub_filter_tags.retain(|t| !t.starts_with(&prefix_tag));
-                        if !self.hub_filter_tags.contains(key) {
-                            self.hub_filter_tags.push(key.clone());
-                        }
-                    }
-                }
-            });
-    }
+        ui.add_space(2.0);
 
-    fn load_hub_server_info(&mut self, address: &str) {
-        self.selected_server_address = Some(address.to_string());
-        self.cfg.hub_server_url = normalize_base_url(&self.cfg.hub_server_url);
-        let options = self.hub_options();
-        match fetch_server_info_from_hub_with_options(&self.cfg.hub_server_url, address, options) {
-            Ok(info) => {
-                self.selected_server_info = Some(info);
-                self.status = format!("Loaded server info for {address}");
-                self.push_log(self.status.clone());
-            }
-            Err(err) => {
-                self.selected_server_info = None;
-                self.status = format!("Failed to get server info from hub: {err:#}");
-                self.push_log(self.status.clone());
+        if options.is_empty() {
+            let t_none = self.t("hub.none", &[]);
+            ui.label(
+                egui::RichText::new(t_none).small().color(SUB_TEXT),
+            );
+            return;
+        }
+
+        for (key, disp) in options {
+            let mut checked = self.hub_filter_tags.iter().any(|t| t == key);
+            if ui.checkbox(&mut checked, disp).changed() {
+                if checked {
+                    self.hub_filter_tags.retain(|t| !t.starts_with(&prefix_tag));
+                    if !self.hub_filter_tags.iter().any(|t| t == key) {
+                        self.hub_filter_tags.push(key.clone());
+                    }
+                } else {
+                    self.hub_filter_tags.retain(|t| t != key);
+                }
             }
         }
     }
 
+    fn load_hub_server_info(&mut self, address: &str) {
+        self.selected_server_address = Some(address.to_string());
+
+        if let Some(cached) = self.server_info_cache.get(address).cloned() {
+            self.selected_server_info = cached;
+            return;
+        }
+
+        if self.server_info_loading.contains(address) {
+            return;
+        }
+        self.server_info_loading.insert(address.to_string());
+
+        self.cfg.hub_server_url = normalize_base_url(&self.cfg.hub_server_url);
+        let url = self.cfg.hub_server_url.clone();
+        let options = self.hub_options();
+        let proxy = options.proxy_url.clone();
+        let addr = address.to_string();
+        let pending = self.server_info_pending.clone();
+
+        std::thread::spawn(move || {
+            let result = fetch_server_info_from_hub_with_options(&url, &addr, options)
+                .or_else(|_| fetch_server_info_direct_with_proxy(&addr, proxy.as_deref()));
+            if let Ok(mut slot) = pending.lock() {
+                *slot = Some((addr, result));
+            }
+        });
+    }
+
+    pub(crate) fn poll_hub_server_info(&mut self, ctx: &egui::Context) {
+        let result = {
+            let mut slot = self.server_info_pending.lock().unwrap_or_else(|e| e.into_inner());
+            slot.take()
+        };
+        let Some((address, result)) = result else {
+            return;
+        };
+
+        self.server_info_loading.remove(&address);
+        match result {
+            Ok(info) => {
+                self.server_info_cache.insert(address.clone(), Some(info.clone()));
+                if self.selected_server_address.as_deref() == Some(address.as_str()) {
+                    self.selected_server_info = Some(info);
+                }
+                let msg = self.t("status.server_info_loaded", &[&address]);
+                self.status = msg;
+                self.push_log(self.status.clone());
+            }
+            Err(err) => {
+                self.server_info_cache.insert(address.clone(), None);
+                if self.selected_server_address.as_deref() == Some(address.as_str()) {
+                    self.selected_server_info = None;
+                }
+                let msg = self.t("status.server_info_fail", &[&err.to_string()]);
+                self.status = msg;
+                self.push_log(self.status.clone());
+            }
+        }
+        ctx.request_repaint();
+    }
+
     pub(super) fn draw_options_page(&mut self, ui: &mut egui::Ui) {
+        // Translate once up-front; the options page mutates self.cfg extensively
+        // inside the scroll closure, so we capture owned strings to avoid
+        // borrow conflicts with self.t().
+        let t_options = self.t("options.title", &[]);
+        let t_networking = self.t("options.networking", &[]);
+        let t_proxy_enable = self.t("options.proxy_enable", &[]);
+        let t_proxy_settings = self.t("options.proxy_settings", &[]);
+        let t_proxy_presets = self.t("options.proxy_presets", &[]);
+        let t_none = self.t("hub.none", &[]);
+        let t_connection = self.t("options.connection", &[]);
+        let t_auto_reconnect = self.t("options.auto_reconnect", &[]);
+        let t_reconnect_delay = self.t("options.reconnect_delay", &[]);
+        let t_storage = self.t("options.storage", &[]);
+        let t_clear_content = self.t("options.clear_content", &[]);
+        let t_clear_engines = self.t("options.clear_engines", &[]);
+        let t_appearance = self.t("options.appearance", &[]);
+        let t_logo_text_only = self.t("options.logo_text_only", &[]);
+        let t_select_font = self.t("options.select_font", &[]);
+        let t_reset_font = self.t("options.reset_font", &[]);
+        let t_font_ubuntu = self.t("options.font_ubuntu", &[]);
+        let t_font_size = self.t("options.font_size", &[]);
+        let t_add_image = self.t("options.add_image", &[]);
+        let t_remove_selected = self.t("options.remove_selected", &[]);
+        let t_no_background = self.t("options.no_background", &[]);
+        let t_background_positioning = self.t("options.background_positioning", &[]);
+        let t_pos_x = self.t("options.pos_x", &[]);
+        let t_pos_y = self.t("options.pos_y", &[]);
+        let t_scale = self.t("options.scale", &[]);
+        let t_center_image = self.t("options.center_image", &[]);
+        let t_center_image_hover = self.t("options.center_image_hover", &[]);
+        let t_no_background_pos = self.t("options.no_background_pos", &[]);
+        let t_pause_animations = self.t("options.pause_animations", &[]);
+        let t_color_scheme = self.t("options.color_scheme", &[]);
+        let t_c_bg = self.t("options.color_background", &[]);
+        let t_c_top = self.t("options.color_topbar", &[]);
+        let t_c_footer = self.t("options.color_footer", &[]);
+        let t_c_buttons = self.t("options.color_buttons", &[]);
+        let t_c_hover = self.t("options.color_hover", &[]);
+        let t_c_hub = self.t("options.color_hub", &[]);
+        let t_c_text = self.t("options.color_text", &[]);
+        let t_c_muted = self.t("options.color_muted", &[]);
+        let t_c_accent = self.t("options.color_accent", &[]);
+        let t_box_opacity = self.t("options.box_opacity", &[]);
+        let t_reset_colors = self.t("options.reset_colors", &[]);
+        let t_extensions = self.t("options.extensions", &[]);
+        let t_sideload = self.t("options.sideload", &[]);
+        let t_refresh_extensions = self.t("options.refresh_extensions", &[]);
+        let t_updates = self.t("options.updates", &[]);
+        let t_check_updates_hover = self.t("options.check_updates_hover", &[]);
+        let t_update_launcher = self.t("options.update_launcher", &[]);
+        let t_update_launcher_hover = self.t("options.update_launcher_hover", &[]);
+        let t_checking = self.t("options.checking_updates", &[]);
+        let t_updates_available = self.t("options.updates_available", &[]);
+        let t_up_to_date = self.t("options.up_to_date", &[]);
+        let t_auto_update = self.t("options.auto_update", &[]);
+        let t_save_config = self.t("options.save_config", &[]);
+        let t_save_config_hover = self.t("options.save_config_hover", &[]);
+        let t_load_config = self.t("options.load_config", &[]);
+        let t_load_config_hover = self.t("options.load_config_hover", &[]);
+        let t_reset_config = self.t("options.reset_config", &[]);
+        let t_reset_config_hover = self.t("options.reset_config_hover", &[]);
+        let t_data_dirs = self.t("options.data_dirs", &[]);
+        let t_language = self.t("options.language", &[]);
+
         egui::ScrollArea::vertical()
             .id_salt("options_page")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_space(8.0);
-                nano_heading(ui, "Options");
+                nano_heading(ui, t_options);
         ui.separator();
 
-        ui.label("Networking");
-        ui.checkbox(&mut self.cfg.proxy_enabled, "Enable proxy for launcher network traffic");
-        if ui.button("Proxy settings").clicked() {
+        ui.horizontal(|ui| {
+            ui.label(&t_language);
+            egui::ComboBox::from_id_salt("lang_combo")
+                .selected_text(
+                    super::i18n::LANGUAGES
+                        .iter()
+                        .find(|(id, _)| *id == self.localizer.language)
+                        .map(|(_, name)| *name)
+                        .unwrap_or(self.localizer.language.as_str()),
+                )
+                .show_ui(ui, |ui| {
+                    for (id, name) in super::i18n::LANGUAGES {
+                        if ui
+                            .selectable_label(self.localizer.language == *id, *name)
+                            .clicked()
+                        {
+                            self.cfg.language = id.to_string();
+                            self.localizer.set_language(id);
+                            self.font_source_initialized = false;
+                        }
+                    }
+                });
+        });
+        ui.separator();
+
+        ui.label(t_networking);
+        ui.checkbox(&mut self.cfg.proxy_enabled, &t_proxy_enable);
+        if ui.button(t_proxy_settings).clicked() {
             self.show_proxy_modal = true;
         }
-        egui::ComboBox::from_label("Proxy presets")
+        let alpha = (self.cfg.color_scheme.item_alpha.clamp(0.0, 1.0) * 255.0) as u8;
+        let item_fill = egui::Color32::from_rgba_unmultiplied(
+            self.cfg.color_scheme.item_r,
+            self.cfg.color_scheme.item_g,
+            self.cfg.color_scheme.item_b,
+            alpha,
+        );
+        let old_inactive = ui.visuals().widgets.inactive.bg_fill;
+        let old_hovered = ui.visuals().widgets.hovered.bg_fill;
+        ui.visuals_mut().widgets.inactive.bg_fill = item_fill;
+        ui.visuals_mut().widgets.hovered.bg_fill = item_fill;
+        egui::ComboBox::from_label(t_proxy_presets)
             .selected_text(if self.cfg.proxy_url.trim().is_empty() {
-                "None"
+                t_none.as_str()
             } else {
                 &self.cfg.proxy_url
             })
             .show_ui(ui, |ui| {
-                if ui.selectable_label(self.cfg.proxy_url.trim().is_empty(), "None").clicked() {
+                if ui.selectable_label(self.cfg.proxy_url.trim().is_empty(), t_none.as_str()).clicked() {
                     self.cfg.proxy_url.clear();
                 }
 
@@ -744,12 +956,14 @@ impl LauncherApp {
                     }
                 }
             });
+        ui.visuals_mut().widgets.inactive.bg_fill = old_inactive;
+        ui.visuals_mut().widgets.hovered.bg_fill = old_hovered;
 
         ui.separator();
-        ui.label("Connection");
-        ui.checkbox(&mut self.cfg.auto_reconnect, "Auto-reconnect to the last server when disconnected");
+        ui.label(t_connection);
+        ui.checkbox(&mut self.cfg.auto_reconnect, &t_auto_reconnect);
         ui.horizontal(|ui| {
-            ui.label("Reconnect delay (ms):");
+            ui.label(&t_reconnect_delay);
             ui.add(
                 egui::DragValue::new(&mut self.cfg.auto_reconnect_delay_ms)
                     .range(0..=600000)
@@ -758,31 +972,78 @@ impl LauncherApp {
         });
 
         ui.separator();
-        ui.label("Storage");
+        ui.label(t_storage);
         ui.horizontal(|ui| {
-            if ui.button("Clear installed server content").clicked() {
+            if ui.button(&t_clear_content).clicked() {
                 self.clear_installed_server_content();
             }
-            if ui.button("Clear installed engines").clicked() {
+            if ui.button(&t_clear_engines).clicked() {
                 self.clear_installed_engines();
             }
         });
 
         ui.separator();
-        ui.label("Appearance");
+        ui.label(t_appearance);
+
+        ui.checkbox(
+            &mut self.cfg.logo_text_only,
+            &t_logo_text_only,
+        );
+
+        ui.horizontal(|ui| {
+            if ui.button(&t_select_font).clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    self.cfg.font_path = path.display().to_string();
+                }
+            }
+            if !self.cfg.font_path.trim().is_empty() {
+                if ui.button(&t_reset_font).clicked() {
+                    self.cfg.font_path.clear();
+                }
+            }
+        });
+        if self.cfg.font_path.trim().is_empty() {
+            ui.label(
+                egui::RichText::new(&t_font_ubuntu)
+                    .small()
+                    .color(SUB_TEXT),
+            );
+        } else {
+            let msg = self.t("options.font_path", &[&self.cfg.font_path]);
+            ui.label(
+                egui::RichText::new(msg)
+                    .small()
+                    .color(SUB_TEXT),
+            );
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(&t_font_size);
+            let mut slider_size = self.cfg.font_size.clamp(8.0, 40.0);
+            let size_px = slider_size.clamp(8.0, 40.0);
+            let px_label = self.t("options.px", &[&format!("{size_px:.0}")]);
+            let resp = ui.add(
+                egui::Slider::new(&mut slider_size, 8.0..=40.0)
+                    .step_by(1.0)
+                    .text(px_label),
+            );
+            if resp.drag_stopped() {
+                self.cfg.font_size = slider_size;
+            }
+        });
 
         let mut add_image: Option<String> = None;
         let mut remove_index: Option<usize> = None;
         
 
         ui.horizontal(|ui| {
-            if ui.button("Add image or GIF").clicked() {
+            if ui.button(&t_add_image).clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
                     add_image = Some(path.display().to_string());
                 }
             }
             if !self.cfg.background_images.is_empty() {
-                if ui.button("Remove selected").clicked() {
+                if ui.button(&t_remove_selected).clicked() {
                     remove_index = Some(self.background_edit_index);
                 }
             }
@@ -790,7 +1051,7 @@ impl LauncherApp {
 
         if self.cfg.background_images.is_empty() {
             ui.label(
-                egui::RichText::new("No background media added")
+                egui::RichText::new(&t_no_background)
                     .small()
                     .weak(),
             );
@@ -801,9 +1062,20 @@ impl LauncherApp {
             let edit = self.background_edit_index;
             let current = self.cfg.background_images[edit].path.clone();
             let mut chosen = edit;
+            let alpha = (self.cfg.color_scheme.item_alpha.clamp(0.0, 1.0) * 255.0) as u8;
+            let item_fill = egui::Color32::from_rgba_unmultiplied(
+                self.cfg.color_scheme.item_r,
+                self.cfg.color_scheme.item_g,
+                self.cfg.color_scheme.item_b,
+                alpha,
+            );
+            let old_inactive = ui.visuals().widgets.inactive.bg_fill;
+            let old_hovered = ui.visuals().widgets.hovered.bg_fill;
+            ui.visuals_mut().widgets.inactive.bg_fill = item_fill;
+            ui.visuals_mut().widgets.hovered.bg_fill = item_fill;
             egui::ComboBox::from_id_salt("background_images_combo")
                 .selected_text(current)
-                .width(ui.available_width())
+                .width(160.0)
                 .show_ui(ui, |ui| {
                     for (i, img) in self.cfg.background_images.iter().enumerate() {
                         if ui
@@ -814,6 +1086,8 @@ impl LauncherApp {
                         }
                     }
                 });
+            ui.visuals_mut().widgets.inactive.bg_fill = old_inactive;
+            ui.visuals_mut().widgets.hovered.bg_fill = old_hovered;
             if chosen != self.background_edit_index {
                 self.background_edit_index = chosen;
             }
@@ -830,14 +1104,15 @@ impl LauncherApp {
                 });
                 self.background_edit_index = self.cfg.background_images.len() - 1;
             }
-            self.status = format!("Background media added: {path}");
+            let msg = self.t("options.background_added", &[&path]);
+            self.status = msg;
             self.push_log(self.status.clone());
         }
 
         if let Some(i) = remove_index {
             if i < self.cfg.background_images.len() {
                 self.cfg.background_images.remove(i);
-                self.status = String::from("Background media removed");
+                self.status = self.t("options.background_removed", &[]);
                 self.push_log(self.status.clone());
             }
             if self.background_edit_index >= self.cfg.background_images.len() {
@@ -847,14 +1122,14 @@ impl LauncherApp {
         }
 
         ui.separator();
-        ui.label("Selected background positioning");
+        ui.label(t_background_positioning);
         if let Some(edit) = self.cfg.background_images.get_mut(self.background_edit_index) {
             ui.horizontal(|ui| {
-                ui.label("Position X:");
+                ui.label(&t_pos_x);
                 ui.add(egui::DragValue::new(&mut edit.pos_x).speed(1.0));
-                ui.label("Position Y:");
+                ui.label(&t_pos_y);
                 ui.add(egui::DragValue::new(&mut edit.pos_y).speed(1.0));
-                ui.label("Scale:");
+                ui.label(&t_scale);
                 ui.add(
                     egui::DragValue::new(&mut edit.scale)
                         .range(0.1..=10.0)
@@ -862,8 +1137,8 @@ impl LauncherApp {
                 );
             });
             if ui
-                .button("Center image")
-                .on_hover_text("Reset the selected image to the center of the window")
+                .button(t_center_image.clone())
+                .on_hover_text(t_center_image_hover.clone())
                 .clicked()
             {
                 edit.pos_x = 0.0;
@@ -871,7 +1146,7 @@ impl LauncherApp {
             }
         } else {
             ui.label(
-                egui::RichText::new("Add a background above to adjust its position")
+                egui::RichText::new(&t_no_background_pos)
                     .small()
                     .weak(),
             );
@@ -879,30 +1154,40 @@ impl LauncherApp {
 
         ui.checkbox(
             &mut self.cfg.pause_animations_unfocused,
-            "Pause animations when the window is unfocused",
+            &t_pause_animations,
         );
 
         ui.separator();
         ui.separator();
-        ui.label("Color scheme");
+        ui.label(t_color_scheme);
+        let alpha_pct = self.cfg.color_scheme.item_alpha * 100.0;
+        let pct_label = self.t("options.pct", &[&format!("{alpha_pct:.0}")]);
         let cs = &mut self.cfg.color_scheme;
-        color_row(ui, "Background", cs, 0);
-        color_row(ui, "Top bar", cs, 1);
-        color_row(ui, "Footer", cs, 2);
-        color_row(ui, "Buttons", cs, 3);
-        color_row(ui, "Hover", cs, 4);
-        color_row(ui, "Hub", cs, 5);
-        color_row(ui, "Text", cs, 6);
-        color_row(ui, "Muted text", cs, 7);
-        color_row(ui, "Accent", cs, 8);
-        if ui.button("Reset colors to default").clicked() {
+        color_row(ui, &t_c_bg, cs, 0);
+        color_row(ui, &t_c_top, cs, 1);
+        color_row(ui, &t_c_footer, cs, 2);
+        color_row(ui, &t_c_buttons, cs, 3);
+        color_row(ui, &t_c_hover, cs, 4);
+        color_row(ui, &t_c_hub, cs, 5);
+        color_row(ui, &t_c_text, cs, 6);
+        color_row(ui, &t_c_muted, cs, 7);
+        color_row(ui, &t_c_accent, cs, 8);
+        ui.horizontal(|ui| {
+            ui.label(&t_box_opacity);
+            ui.add(
+                egui::Slider::new(&mut cs.item_alpha, 0.0..=1.0)
+                    .step_by(0.01)
+                    .text(pct_label),
+            );
+        });
+        if ui.button(t_reset_colors).clicked() {
             self.cfg.color_scheme = crate::backend::ColorScheme::default();
         }
 
         ui.separator();
-        ui.label("Extensions");
+        ui.label(t_extensions);
         ui.horizontal(|ui| {
-            if ui.button("Sideload extension bundle").clicked() {
+            if ui.button(&t_sideload).clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
                     match sideload_extension_bundle(&self.paths, &path) {
                         Ok(name) => {
@@ -910,18 +1195,20 @@ impl LauncherApp {
                                 self.cfg.enabled_extensions.push(name.clone());
                             }
                             self.extension_files = list_sideloaded_extensions(&self.paths).unwrap_or_default();
-                            self.status = format!("Sideloaded extension bundle: {name}");
+                            let msg = self.t("options.sideloaded", &[&name]);
+                            self.status = msg;
                             self.push_log(self.status.clone());
                         }
                         Err(err) => {
-                            self.status = format!("Failed to sideload extension: {err:#}");
+                            let msg = self.t("options.sideload_fail", &[&err.to_string()]);
+                            self.status = msg;
                             self.push_log(self.status.clone());
                         }
                     }
                 }
             }
 
-            if ui.button("Refresh extension list").clicked() {
+            if ui.button(&t_refresh_extensions).clicked() {
                 self.extension_files = list_sideloaded_extensions(&self.paths).unwrap_or_default();
             }
         });
@@ -939,17 +1226,21 @@ impl LauncherApp {
                     }
                 }
 
-                if ui.small_button("Remove").on_hover_text("Remove this sideloaded bundle").clicked() {
+                let t_rem = self.t("options.remove_extension", &[]);
+                let t_rem_hover = self.t("options.remove_extension_hover", &[]);
+                if ui.small_button(t_rem.clone()).on_hover_text(t_rem_hover).clicked() {
                     match remove_sideloaded_extension(&self.paths, &ext) {
                         Ok(()) => {
                             self.cfg.enabled_extensions.retain(|e| e != &ext);
                             self.extension_files =
                                 list_sideloaded_extensions(&self.paths).unwrap_or_default();
-                            self.status = format!("Removed extension: {ext}");
+                            let msg = self.t("options.extension_removed", &[&ext]);
+                            self.status = msg;
                             self.push_log(self.status.clone());
                         }
                         Err(err) => {
-                            self.status = format!("Failed to remove extension: {err:#}");
+                            let msg = self.t("options.extension_remove_fail", &[&err.to_string()]);
+                            self.status = msg;
                             self.push_log(self.status.clone());
                         }
                     }
@@ -959,22 +1250,23 @@ impl LauncherApp {
 
         ui.separator();
         ui.separator();
-        ui.label("Updates");
+        ui.label(t_updates);
         ui.horizontal(|ui| {
-            ui.label(format!("Current version: v{}", super::APP_VERSION));
+            let cv = self.t("options.current_version", &[super::APP_VERSION]);
+            ui.label(cv);
             if !self.release_checking() {
                 let label = if self.release_check_done() {
-                    "Re-check for updates"
+                    self.t("options.recheck_updates", &[])
                 } else {
-                    "Check for updates"
+                    self.t("options.check_updates", &[]).clone()
                 };
-                if ui.button(label).on_hover_text("Contact GitHub to look for a newer release").clicked() {
+                if ui.button(label).on_hover_text(t_check_updates_hover.clone()).clicked() {
                     self.start_update_check();
                 }
                 if self.update_available() == Some(true) {
                     if ui
-                        .button("Update launcher")
-                        .on_hover_text("Download the compiled update for this OS")
+                        .button(t_update_launcher.clone())
+                        .on_hover_text(t_update_launcher_hover.clone())
                         .clicked()
                     {
                         self.start_update();
@@ -983,51 +1275,54 @@ impl LauncherApp {
             }
         });
         if let Some(tag) = self.latest_release_label() {
-            ui.label(format!("Latest version: {tag}"));
+            let lv = self.t("options.latest_version", &[&tag]);
+            ui.label(lv);
         }
         if self.release_checking() {
-            ui.label(egui::RichText::new("Checking for updates...").weak());
-        } else if let Some(error) = self.release_check_error() {
+            ui.label(egui::RichText::new(t_checking.clone()).weak());
+        } else if let Some(error) = self.release_check_error_localized() {
             ui.label(egui::RichText::new(error).color(SUB_TEXT));
         } else if self.update_available() == Some(true) {
             ui.label(
-                egui::RichText::new("Updates available")
+                egui::RichText::new(&t_updates_available)
                     .strong()
                     .color(GOLD),
             );
         } else if self.update_available() == Some(false) {
-            ui.label(egui::RichText::new("You are up to date").weak());
+            ui.label(egui::RichText::new(&t_up_to_date).weak());
         }
         ui.checkbox(
             &mut self.cfg.auto_update,
-            "Enable automatic updates",
+            &t_auto_update,
         );
 
         ui.separator();
         ui.horizontal(|ui| {
             if ui
-                .button("Save Config")
-                .on_hover_text("Save the current settings to the config file")
+                .button(t_save_config.clone())
+                .on_hover_text(t_save_config_hover.clone())
                 .clicked()
             {
                 match save_config(&self.paths, &self.cfg) {
                     Ok(()) => {
-                        self.status = format!(
-                            "Config saved to {}",
-                            self.paths.config_path.to_string_lossy()
+                        let msg = self.t(
+                            "options.config_saved",
+                            &[&self.paths.config_path.to_string_lossy()],
                         );
+                        self.status = msg;
                         self.push_log(self.status.clone());
                     }
                     Err(err) => {
-                        self.status = format!("Failed to save config: {err:#}");
+                        let msg = self.t("options.config_save_fail", &[&err.to_string()]);
+                        self.status = msg;
                         self.push_log(self.status.clone());
                     }
                 }
             }
 
             if ui
-                .button("Load Config")
-                .on_hover_text("Load settings from a config file")
+                .button(t_load_config.clone())
+                .on_hover_text(t_load_config_hover.clone())
                 .clicked()
             {
                 if let Some(path) = rfd::FileDialog::new().add_filter("Config", &["toml", "cfg"]).pick_file() {
@@ -1036,12 +1331,13 @@ impl LauncherApp {
                             self.cfg = cfg;
                             self.extension_files =
                                 list_sideloaded_extensions(&self.paths).unwrap_or_default();
-                            self.status =
-                                format!("Config loaded from {}", path.display());
+                            let msg = self.t("options.config_loaded", &[&path.display().to_string()]);
+                            self.status = msg;
                             self.push_log(self.status.clone());
                         }
                         Err(err) => {
-                            self.status = format!("Failed to load config: {err:#}");
+                            let msg = self.t("options.config_load_fail", &[&err.to_string()]);
+                            self.status = msg;
                             self.push_log(self.status.clone());
                         }
                     }
@@ -1049,25 +1345,30 @@ impl LauncherApp {
             }
 
             if ui
-                .button("Reset Config")
-                .on_hover_text("Reset the current config to defaults")
+                .button(t_reset_config.clone())
+                .on_hover_text(t_reset_config_hover.clone())
                 .clicked()
             {
                 self.cfg = crate::backend::LauncherConfig::default();
                 self.extension_files =
                     list_sideloaded_extensions(&self.paths).unwrap_or_default();
-                self.status = String::from("Config reset to defaults");
+                self.status = self.t("options.config_reset", &[]);
                 self.push_log(self.status.clone());
             }
         });
 
         ui.separator();
-        ui.label("Launcher data directories");
-        ui.label(format!("User data: {}", self.paths.user_data_dir.to_string_lossy()));
-        ui.label(format!("Local data: {}", self.paths.local_data_dir.to_string_lossy()));
-        ui.label(format!("Logs: {}", self.paths.logs_dir.to_string_lossy()));
-        ui.label(format!("Clients: {}", self.paths.clients_dir.to_string_lossy()));
-        ui.label(format!("Extensions: {}", self.paths.extensions_dir.to_string_lossy()));
+        ui.label(t_data_dirs);
+        let dd = self.t("connection.user_state", &[&self.paths.user_data_dir.to_string_lossy()]);
+        ui.label(dd);
+        let dd = self.t("connection.local_state", &[&self.paths.local_data_dir.to_string_lossy()]);
+        ui.label(dd);
+        let dd = self.t("connection.logs_state", &[&self.paths.logs_dir.to_string_lossy()]);
+        ui.label(dd);
+        let dd = self.t("connection.clients_state", &[&self.paths.clients_dir.to_string_lossy()]);
+        ui.label(dd);
+        let dd = self.t("connection.extensions_state", &[&self.paths.extensions_dir.to_string_lossy()]);
+        ui.label(dd);
     });
     }
 }
@@ -1123,5 +1424,5 @@ fn truncated_label(ui: &mut egui::Ui, text: &str, width: f32, color: egui::Color
         font_id,
         color,
     );
-    response.on_hover_text(text)
+    response
 }

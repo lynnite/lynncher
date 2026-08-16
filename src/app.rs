@@ -1,6 +1,7 @@
 use eframe::egui;
 
 mod actions;
+mod i18n;
 mod loader_actions;
 mod modals;
 mod panels;
@@ -12,6 +13,8 @@ use crate::backend::{
     DEFAULT_HUB_SERVER,
 };
 
+use i18n::Localizer;
+
 /// Launcher version string shown in the UI and used for update checks.
 ///
 /// To change the launcher's version, edit this single constant. It defaults
@@ -22,6 +25,7 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct LauncherApp {
     paths: LauncherPaths,
     cfg: LauncherConfig,
+    localizer: Localizer,
     status: String,
     logs: Vec<String>,
     style_applied: bool,
@@ -54,11 +58,20 @@ pub struct LauncherApp {
     background: Option<worker::BackgroundWork>,
     favorite_name_inputs: std::collections::HashMap<String, String>,
     favorite_infos: std::collections::HashMap<String, ServerInfo>,
+    favorite_desc_visible: std::collections::HashMap<String, bool>,
+    server_info_cache: std::collections::HashMap<String, Option<ServerInfo>>,
+    server_info_loading: std::collections::HashSet<String>,
+    server_info_pending: std::sync::Arc<std::sync::Mutex<Option<(String, anyhow::Result<ServerInfo>)>>>,
     update_check: std::sync::Arc<std::sync::Mutex<UpdateCheckState>>,
     update_action_result: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     last_config_save: Option<std::time::Instant>,
     last_saved_config: Option<String>,
     auto_update_initiated: bool,
+    cursor_override_registered: bool,
+    last_font_source: String,
+    font_source_initialized: bool,
+    last_font_size: f32,
+    last_font_lang: String,
 }
 
 #[derive(Default, Clone)]
@@ -116,21 +129,11 @@ impl LauncherApp {
         cleanup_stale_update();
 
         let mut logs = Vec::new();
-        let mut status = String::from("Ready");
 
-        if let Err(err) = ensure_dirs(&paths) {
-            status = format!("Failed to create launcher directories: {err:#}");
-            logs.push(status.clone());
-        }
-
-        let mut cfg = match load_config(&paths) {
-            Ok(c) => c,
-            Err(err) => {
-                let msg = format!("Failed to load config, using defaults: {err:#}");
-                logs.push(msg.clone());
-                status = msg;
-                LauncherConfig::default()
-            }
+        let dir_err = ensure_dirs(&paths).err();
+        let (mut cfg, cfg_load_log) = match load_config(&paths) {
+            Ok(c) => (c, None),
+            Err(err) => (LauncherConfig::default(), Some(err.to_string())),
         };
 
         if let Some(uri) = initial_uri {
@@ -147,9 +150,28 @@ impl LauncherApp {
 
         let extension_files = list_sideloaded_extensions(&paths).unwrap_or_default();
 
+        let language = if cfg.language.trim().is_empty() {
+            i18n::DEFAULT_LANG.to_string()
+        } else {
+            cfg.language.clone()
+        };
+
+        let localizer = Localizer::new(&language);
+
+        if let Some(err_str) = cfg_load_log {
+            logs.push(localizer.t("app.status_cfg_fail", &[&err_str]));
+        }
+
+        let status = if let Some(err) = dir_err {
+            localizer.t("app.status_dir_fail", &[&err.to_string()])
+        } else {
+            localizer.t("app.ready", &[])
+        };
+
         Self {
             paths,
             cfg,
+            localizer,
             status,
             logs,
             style_applied: false,
@@ -181,11 +203,20 @@ impl LauncherApp {
             background: None,
             favorite_name_inputs: std::collections::HashMap::new(),
             favorite_infos: std::collections::HashMap::new(),
+            favorite_desc_visible: std::collections::HashMap::new(),
+            server_info_cache: std::collections::HashMap::new(),
+            server_info_loading: std::collections::HashSet::new(),
+            server_info_pending: std::sync::Arc::new(std::sync::Mutex::new(None)),
             update_check: std::sync::Arc::new(std::sync::Mutex::new(UpdateCheckState::default())),
             update_action_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             last_config_save: None,
             last_saved_config: None,
             auto_update_initiated: false,
+            cursor_override_registered: false,
+            last_font_source: String::new(),
+            font_source_initialized: false,
+            last_font_size: 0.0,
+            last_font_lang: String::new(),
         }
     }
 
@@ -200,14 +231,35 @@ impl LauncherApp {
         self.progress = None;
     }
 
-        fn draw_progress(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn t(&self, key: &str, args: &[&str]) -> String {
+        self.localizer.t(key, args)
+    }
+
+    pub(crate) fn apply_font(&mut self, ctx: &egui::Context) {
+        let source = self.cfg.font_path.clone();
+        let lang = self.localizer.language.clone();
+        if self.font_source_initialized
+            && self.last_font_source == source
+            && self.last_font_lang == lang
+        {
+            return;
+        }
+        let fonts = build_font_definitions(&source, &lang);
+        ctx.set_fonts(fonts);
+        self.last_font_source = source;
+        self.last_font_lang = lang;
+        self.font_source_initialized = true;
+    }
+
+    fn draw_progress(&mut self, ui: &mut egui::Ui) {
         let progress = self.progress.clone();
         let connecting = self.connection_active();
 
+        let t_connecting = self.t("app.connecting", &[]);
         let Some(progress) = progress else {
             if connecting {
                 ui.horizontal(|ui| {
-                    ui.label("Connecting...");
+                    ui.label(t_connecting);
                     if self.cancel_button(ui) {
                         self.cancel_connection();
                     }
@@ -256,13 +308,15 @@ impl LauncherApp {
     }
 
     fn cancel_button(&mut self, ui: &mut egui::Ui) -> bool {
-        let btn = egui::Button::new(egui::RichText::new("Cancel").size(11.0))
+        let t_cancel = self.t("app.cancel", &[]);
+        let t_hover = self.t("app.cancel_hover", &[]);
+        let btn = egui::Button::new(egui::RichText::new(t_cancel).size(11.0))
             .min_size(egui::vec2(72.0, 28.0))
             .rounding(0.0)
             .fill(egui::Color32::from_rgb(0x50, 0x18, 0x18))
             .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x8A, 0x20, 0x20)));
         ui.add(btn)
-            .on_hover_text("Stop connecting and remove partially downloaded files")
+            .on_hover_text(t_hover)
             .clicked()
     }
 
@@ -270,9 +324,23 @@ impl LauncherApp {
 
 impl eframe::App for LauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.cursor_override_registered {
+            self.cursor_override_registered = true;
+            ctx.on_end_pass(
+                "ForceArrowCursor",
+                std::sync::Arc::new(|ctx| {
+                    ctx.output_mut(|out| {
+                        out.cursor_icon = egui::CursorIcon::Default;
+                    });
+                }),
+            );
+        }
+
+        self.apply_font(ctx);
         self.apply_flat_style(ctx);
         self.poll_background();
         self.poll_update_action();
+        self.poll_hub_server_info(ctx);
         self.run_auto_update();
         self.save_config_if_dirty();
 
@@ -532,6 +600,8 @@ impl LauncherApp {
     }
 
     fn draw_header_panel(&mut self, ctx: &egui::Context) {
+        let t_discord = self.t("app.discord", &[]);
+        let t_discord_hover = self.t("app.discord_hover", &[]);
         let cs = &self.cfg.color_scheme;
         let header_fill = egui::Color32::from_rgb(cs.header_r, cs.header_g, cs.header_b);
         egui::TopBottomPanel::top("header")
@@ -547,7 +617,7 @@ impl LauncherApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.draw_account_menu(ui);
 
-                        if ui.button("Discord").on_hover_text("Join the SS14 Discord").clicked() {
+                        if ui.button(t_discord).on_hover_text(t_discord_hover).clicked() {
                             ui.ctx().open_url(egui::output::OpenUrl {
                                 url: "https://discord.gg/Jg2r8JETyf".to_string(),
                                 new_tab: true,
@@ -565,23 +635,30 @@ impl LauncherApp {
     }
 
     fn draw_logo(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.logo_texture.is_none() {
+        if !self.cfg.logo_text_only && self.logo_texture.is_none() {
             self.logo_texture = load_logo_texture(ctx);
         }
-        if let Some(tex) = &self.logo_texture {
-            let size = egui::vec2(112.0, 81.0);
-            ui.add(egui::Image::new(tex).fit_to_exact_size(size));
-        } else {
-            ui.label(
-                egui::RichText::new("LYNNCHER")
-                    .size(28.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(0xD5, 0xD5, 0xD5)),
-            );
+        if !self.cfg.logo_text_only {
+            if let Some(tex) = &self.logo_texture {
+                let size = egui::vec2(112.0, 81.0);
+                ui.add(egui::Image::new(tex).fit_to_exact_size(size));
+                return;
+            }
         }
+        ui.label(
+            egui::RichText::new("LYNNCHER")
+                .size(28.0)
+                .strong()
+                .color(egui::Color32::from_rgb(0xD5, 0xD5, 0xD5)),
+        );
     }
 
     fn draw_footer_panel(&mut self, ctx: &egui::Context) {
+        let t_home = self.t("app.home", &[]);
+        let t_servers = self.t("app.servers", &[]);
+        let t_options = self.t("app.options", &[]);
+        let t_direct = self.t("app.direct_connect", &[]);
+        let t_version = self.t("footer.version", &[APP_VERSION]);
         let cs = &self.cfg.color_scheme;
         let footer_fill = egui::Color32::from_rgb(cs.footer_r, cs.footer_g, cs.footer_b);
         egui::TopBottomPanel::bottom("footer")
@@ -589,16 +666,16 @@ impl LauncherApp {
             .show(ctx, |ui| {
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.page, AppPage::Favorites, "Home");
-                    ui.selectable_value(&mut self.page, AppPage::Hub, "Servers");
-                    ui.selectable_value(&mut self.page, AppPage::Options, "Options");
+                    ui.selectable_value(&mut self.page, AppPage::Favorites, t_home);
+                    ui.selectable_value(&mut self.page, AppPage::Hub, t_servers);
+                    ui.selectable_value(&mut self.page, AppPage::Options, t_options);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Direct Connect").clicked() {
+                        if ui.button(t_direct).clicked() {
                             self.open_direct_connect_modal();
                         }
                         ui.label(
-                            egui::RichText::new(format!("v{APP_VERSION}"))
+                            egui::RichText::new(t_version)
                                 .weak()
                                 .small(),
                         );
@@ -617,6 +694,12 @@ impl LauncherApp {
             return;
         }
 
+        let t_title = self.t("direct.title", &[]);
+        let t_desc = self.t("direct.hint_desc", &[]);
+        let t_hint = self.t("direct.hint_addr", &[]);
+        let t_connect = self.t("direct.connect", &[]);
+        let t_cancel = self.t("direct.cancel", &[]);
+
         let mut open = self.show_direct_connect_modal;
         let mut close_requested = false;
         egui::Window::new("direct_connect")
@@ -628,24 +711,24 @@ impl LauncherApp {
             .show(ctx, |ui| {
                 ui.set_width(320.0);
                 ui.label(
-                    egui::RichText::new("Direct Connect")
+                    egui::RichText::new(t_title)
                         .strong()
                         .size(16.0)
                         .color(egui::Color32::from_rgb(0xD5, 0xD5, 0xD5)),
                 );
                 ui.add_space(8.0);
-                ui.label("Enter a server address (e.g. ss14://194.97.20.81:1212)");
+                ui.label(t_desc);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.direct_connect_input)
-                        .hint_text("ss14://address")
+                        .hint_text(t_hint)
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Connect").clicked() {
+                    if ui.button(t_connect).clicked() {
                         let target = self.direct_connect_input.trim().to_string();
                         if target.is_empty() {
-                            self.status = String::from("Direct connect address is empty");
+                            self.status = self.t("direct.empty", &[]);
                             self.push_log(self.status.clone());
                         } else {
                             self.connect_direct(&target);
@@ -653,7 +736,7 @@ impl LauncherApp {
                         self.show_direct_connect_modal = false;
                         close_requested = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t_cancel).clicked() {
                         close_requested = true;
                     }
                 });
@@ -663,6 +746,208 @@ impl LauncherApp {
         }
         let _ = open;
     }
+}
+
+fn build_font_definitions(custom_path: &str, lang: &str) -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+
+    let custom = !custom_path.trim().is_empty();
+    if custom {
+        if let Ok(bytes) = std::fs::read(custom_path) {
+            if !bytes.is_empty() {
+                fonts
+                    .font_data
+                    .insert("primary".to_owned(), egui::FontData::from_owned(bytes).into());
+            }
+        }
+    } else {
+        fonts.font_data.insert(
+            "ubuntu_regular".to_owned(),
+            egui::FontData::from_owned(include_bytes!("assets/Ubuntu-Regular.ttf").to_vec()).into(),
+        );
+        fonts.font_data.insert(
+            "ubuntu_bold".to_owned(),
+            egui::FontData::from_owned(include_bytes!("assets/Ubuntu-Bold.ttf").to_vec()).into(),
+        );
+    }
+
+    let regular = if custom { "primary" } else { "ubuntu_regular" };
+    let bold = if custom { "primary" } else { "ubuntu_bold" };
+
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(list) = fonts.families.get_mut(&family) {
+            if !list.iter().any(|name| name == regular) {
+                list.insert(0, regular.to_owned());
+            }
+            if !list.iter().any(|name| name == bold) {
+                list.insert(1, bold.to_owned());
+            }
+        }
+    }
+
+    if lang == i18n::LANG_ZH {
+        if let Some(cjk) = load_system_cjk_font() {
+            let (name, bytes) = cjk;
+            fonts
+                .font_data
+                .insert(name.clone(), egui::FontData::from_owned(bytes).into());
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                if let Some(list) = fonts.families.get_mut(&family) {
+                    if !list.iter().any(|n| n == &name) {
+                        list.push(name.clone());
+                    }
+                }
+            }
+        }
+        fonts.font_data.insert(
+            "droid_cjk".to_owned(),
+            egui::FontData::from_owned(
+                include_bytes!("assets/DroidSansFallbackFull.ttf").to_vec(),
+            )
+            .into(),
+        );
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            if let Some(list) = fonts.families.get_mut(&family) {
+                if !list.iter().any(|n| n == "droid_cjk") {
+                    list.push("droid_cjk".to_owned());
+                }
+            }
+        }
+    }
+
+    fonts
+}
+
+fn load_system_cjk_font() -> Option<(String, Vec<u8>)> {
+    const PREFERRED_NAMES: &[&str] = &[
+        "NotoSansCJK-Regular.ttc",
+        "NotoSansCJKsc-Regular.otf",
+        "NotoSansSC-Regular.otf",
+        "SourceHanSansCN-Regular.otf",
+        "SourceHanSansSC-Regular.otf",
+        "wqy-microhei.ttc",
+        "wqy-zenhei.ttc",
+        "wqy-microhei.ttf",
+        "wqy-zenhei.ttf",
+        "DroidSansFallbackFull.ttf",
+        "msyh.ttc",
+        "msyh.ttf",
+        "simhei.ttf",
+        "simsun.ttc",
+        "PingFang.ttc",
+        "STHeiti Light.ttc",
+        "STHeiti Medium.ttc",
+        "Noto Sans CJK SC Regular.otf",
+        "Unifont.ttf",
+        "unifont.ttf",
+    ];
+
+    let mut roots: Vec<std::path::PathBuf> = vec![
+        std::path::PathBuf::from("/usr/share/fonts"),
+        std::path::PathBuf::from("/usr/local/share/fonts"),
+        std::path::PathBuf::from("/run/host/fonts"),
+        std::path::PathBuf::from("/usr/X11R6/lib/X11/fonts"),
+        std::path::PathBuf::from("/System/Library/Fonts"),
+        std::path::PathBuf::from("/Library/Fonts"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        roots.push(home.join(".fonts"));
+        roots.push(home.join(".local/share/fonts"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(windir) = std::env::var_os("WINDIR") {
+            roots.push(std::path::PathBuf::from(windir).join("Fonts"));
+        }
+    }
+
+    for name in PREFERRED_NAMES {
+        for root in &roots {
+            if let Some(p) = find_file_named(root, name) {
+                if let Ok(bytes) = std::fs::read(&p) {
+                    if !bytes.is_empty() {
+                        return Some((name.to_string(), bytes));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut seen: Vec<String> = Vec::new();
+    for root in &roots {
+        if let Some(p) = find_any_font(root, &mut seen) {
+            if let Ok(bytes) = std::fs::read(&p) {
+                if !bytes.is_empty() {
+                    let name = p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("system_cjk")
+                        .to_string();
+                    return Some((name, bytes));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn find_file_named(root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let direct = root.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    find_recursive(root, &mut |p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.eq_ignore_ascii_case(name))
+            .unwrap_or(false)
+    })
+}
+
+fn find_any_font(root: &std::path::Path, seen: &mut Vec<String>) -> Option<std::path::PathBuf> {
+    find_recursive(root, &mut |p| {
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ext != "ttf" && ext != "otf" {
+            return false;
+        }
+        let base = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if seen.iter().any(|s| s.eq_ignore_ascii_case(&base)) {
+            return false;
+        }
+        seen.push(base);
+        true
+    })
+}
+
+fn find_recursive<F>(root: &std::path::Path, matches: &mut F) -> Option<std::path::PathBuf>
+where
+    F: FnMut(&std::path::Path) -> bool,
+{
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() && matches(&path) {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn load_static_color_image(path: &str) -> Option<egui::ColorImage> {
@@ -807,4 +1092,29 @@ fn load_texture_from_bytes(
         color_image,
         egui::TextureOptions::LINEAR,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use ab_glyph::Font;
+
+    #[test]
+    fn bundled_cjk_font_has_chinese_glyphs() {
+        let bytes: &[u8] = include_bytes!("assets/DroidSansFallbackFull.ttf");
+        let font = ab_glyph::FontArc::try_from_vec(bytes.to_vec());
+        assert!(font.is_ok(), "bundled Droid CJK font failed to parse");
+        let font = font.unwrap();
+
+        let samples = "中文设置服务器收藏家选项连接语言账号更新保存取消直接";
+        for ch in samples.chars() {
+            let glyph_id = font.glyph_id(ch);
+            assert_ne!(
+                glyph_id.0,
+                0,
+                "bundled CJK font is missing glyph for U+{:04X} ({})",
+                ch as u32,
+                ch
+            );
+        }
+    }
 }

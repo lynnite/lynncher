@@ -7,6 +7,10 @@ use super::LauncherApp;
 impl LauncherApp {
     pub(super) fn draw_account_menu(&mut self, ui: &mut egui::Ui) {
         let active_label = self.active_account_label();
+        let menu_title = self.t("account.menu", &[&active_label]);
+        let t_auth_server = self.t("account.auth_server", &[]);
+        let t_no_account = self.t("account.no_account", &[]);
+        let t_add_account = self.t("account.add", &[]);
         let account_items: Vec<(String, String)> = self
             .cfg
             .accounts
@@ -19,12 +23,12 @@ impl LauncherApp {
             })
             .collect();
 
-        ui.menu_button(format!("Account: {active_label}"), |ui| {
-            ui.label("Auth server");
+        ui.menu_button(menu_title, |ui| {
+            ui.label(t_auth_server);
             ui.text_edit_singleline(&mut self.cfg.auth_server_url);
 
             ui.separator();
-            if ui.selectable_label(self.cfg.active_account_key.is_none(), "No account").clicked() {
+            if ui.selectable_label(self.cfg.active_account_key.is_none(), t_no_account).clicked() {
                 self.cfg.active_account_key = None;
             }
             for (key, label) in &account_items {
@@ -35,17 +39,19 @@ impl LauncherApp {
             }
 
             ui.separator();
-            if ui.button("Add account").clicked() {
+            if ui.button(t_add_account).clicked() {
                 self.show_add_account_modal = true;
                 ui.close_menu();
             }
 
             let mut remove_key: Option<String> = None;
+            let t_remove = self.t("account.remove", &[]);
             for (key, label) in &account_items {
-                let hover = egui::RichText::new("Remove").small().weak();
+                let hover = egui::RichText::new(&t_remove).small().weak();
+                let rem_hover = self.t("account.remove_hover", &[&label]);
                 if ui
                     .add(egui::Button::new(hover).small())
-                    .on_hover_text(format!("Remove saved account {label}"))
+                    .on_hover_text(rem_hover)
                     .clicked()
                 {
                     remove_key = Some(key.clone());
@@ -53,7 +59,7 @@ impl LauncherApp {
             }
             if let Some(key) = remove_key {
                 remove_account(&mut self.cfg, &key);
-                self.status = format!("Removed saved account");
+                self.status = self.t("account.removed", &[]);
                 self.push_log(self.status.clone());
             }
         });
@@ -63,6 +69,11 @@ impl LauncherApp {
         if !self.show_add_account_modal {
             return;
         }
+
+        let t_auth_server = self.t("account.auth_server", &[]);
+        let t_username = self.t("account.username", &[]);
+        let t_password = self.t("account.password", &[]);
+        let t_add_account = self.t("account.add", &[]);
 
         let mut open = self.show_add_account_modal;
         let mut close_requested = false;
@@ -82,14 +93,14 @@ impl LauncherApp {
                     }
                 });
 
-                ui.label("Auth server");
+                ui.label(t_auth_server);
                 ui.text_edit_singleline(&mut self.cfg.auth_server_url);
-                ui.label("Username");
+                ui.label(t_username);
                 ui.text_edit_singleline(&mut self.login_username);
-                ui.label("Password");
+                ui.label(t_password);
                 ui.add(egui::TextEdit::singleline(&mut self.login_password).password(true));
 
-                if ui.button("Add account").clicked() {
+                if ui.button(t_add_account).clicked() {
                     self.cfg.auth_server_url = normalize_base_url(&self.cfg.auth_server_url);
                     let proxy = self.hub_options().proxy_url;
                     match authenticate_account_with_proxy(
@@ -102,13 +113,13 @@ impl LauncherApp {
                             let key = upsert_account(&mut self.cfg, account);
                             self.cfg.active_account_key = Some(key);
                             self.login_password.clear();
-                            self.status = String::from("Authentication succeeded");
+                            self.status = self.t("account.auth_ok", &[]);
                             self.push_log(self.status.clone());
                             self.show_add_account_modal = false;
                             close_requested = true;
                         }
                         Err(err) => {
-                            self.status = format!("Authentication failed: {err:#}");
+                            self.status = self.t("account.auth_fail", &[&err.to_string()]);
                             self.push_log(self.status.clone());
                         }
                     }
@@ -124,6 +135,10 @@ impl LauncherApp {
         if !self.show_proxy_modal {
             return;
         }
+
+        let t_proxy_url = self.t("proxy.url", &[]);
+        let t_preset_url = self.t("proxy.preset_url", &[]);
+        let t_save_preset = self.t("proxy.save_preset", &[]);
 
         let mut open = self.show_proxy_modal;
         let mut close_requested = false;
@@ -143,12 +158,12 @@ impl LauncherApp {
                     }
                 });
 
-                ui.label("Proxy URL");
+                ui.label(t_proxy_url);
                 ui.text_edit_singleline(&mut self.cfg.proxy_url);
-                ui.label("Preset URL");
+                ui.label(t_preset_url);
                 ui.text_edit_singleline(&mut self.new_proxy_preset);
 
-                if ui.button("Save preset").clicked() {
+                if ui.button(t_save_preset).clicked() {
                     let preset = self.new_proxy_preset.trim().to_string();
                     if !preset.is_empty() && !self.cfg.proxy_presets.iter().any(|p| p == &preset) {
                         self.cfg.proxy_presets.push(preset.clone());
@@ -168,6 +183,13 @@ impl LauncherApp {
             return;
         };
 
+        let t_title = self.t("rename.title", &[]);
+        let t_desc = self.t("rename.desc", &[]);
+        let t_hint = self.t("rename.hint", &[]);
+        let t_save = self.t("save", &[]);
+        let t_clear = self.t("clear", &[]);
+        let t_cancel = self.t("cancel", &[]);
+
         let mut open = self.show_rename_modal.is_some();
         let mut close_requested = false;
         let mut save_requested = false;
@@ -182,13 +204,13 @@ impl LauncherApp {
             .show(ctx, |ui| {
                 ui.set_width(320.0);
                 ui.label(
-                    egui::RichText::new("Rename favorite")
+                    egui::RichText::new(t_title)
                         .strong()
                         .size(16.0)
                         .color(egui::Color32::from_rgb(0xD5, 0xD5, 0xD5)),
                 );
                 ui.add_space(6.0);
-                ui.label("Custom name for this server (shown only in the favorites list):");
+                ui.label(t_desc);
                 ui.add_space(4.0);
                 let default_name = self.favorite_display_name(&address);
                 let buf = self
@@ -197,18 +219,18 @@ impl LauncherApp {
                     .or_insert(default_name);
                 ui.add(
                     egui::TextEdit::singleline(buf)
-                        .hint_text("custom name")
+                        .hint_text(t_hint)
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                    if ui.button(t_save).clicked() {
                         save_requested = true;
                     }
-                    if ui.button("Clear").clicked() {
+                    if ui.button(t_clear).clicked() {
                         clear_requested = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t_cancel).clicked() {
                         close_requested = true;
                     }
                 });
