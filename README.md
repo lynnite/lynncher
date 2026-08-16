@@ -4,7 +4,7 @@ A cross-platform launcher for Space Station 14 written in Rust. It builds and ru
 
 ## Current features
 
-- Fully customizable UI, change color scheming, select an image for the backround
+- Fully customizable UI, change color scheming, select an image for the backround, change font, and more
 - Multiaccount
 - Proxy for launcher traffic
 - Basic event log and visible data paths
@@ -14,6 +14,7 @@ A cross-platform launcher for Space Station 14 written in Rust. It builds and ru
 - Auto-reconnect to last server disconnected setting
 - Privacy changes
 - Opt-in automatic updates
+- Chinese localization
 - Edgy logo
 - Rust
 
