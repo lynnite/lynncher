@@ -197,24 +197,35 @@ impl LauncherApp {
                         .servers
                         .iter()
                         .find(|s| s.address.eq_ignore_ascii_case(&address));
-                    let frame_resp = egui::Frame::none()
+                    let t_show_hint = self.t("favorites.show_desc", &[]);
+                    egui::Frame::none()
                         .fill(item_col)
                         .inner_margin(egui::Margin::symmetric(8.0, 2.0))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&name).strong());
+                                // The name widget is sized only to its text. Clicking
+                                // it toggles the description.
+                                let name_resp = ui
+                                    .add(
+                                        egui::Label::new(egui::RichText::new(&name).strong())
+                                            .truncate(),
+                                    )
+                                    .on_hover_text(t_show_hint);
+                                if name_resp.clicked() {
+                                    desc_toggle_target = Some(address.clone());
+                                }
 
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::TOP),
                                     |ui| {
-                                        if ui.small_button(&t_connect).clicked() {
-                                            connect_target = Some(address.clone());
+                                        if ui.small_button(&t_remove).clicked() {
+                                            remove_target = Some(address.clone());
                                         }
                                         if ui.small_button(&t_rename).clicked() {
                                             rename_target = Some(address.clone());
                                         }
-                                        if ui.small_button(&t_remove).clicked() {
-                                            remove_target = Some(address.clone());
+                                        if ui.small_button(&t_connect).clicked() {
+                                            connect_target = Some(address.clone());
                                         }
                                         let round_time = server_entry
                                             .map(format_round_time)
@@ -259,16 +270,6 @@ impl LauncherApp {
                                 }
                             }
                         });
-                    if ui
-                        .interact(
-                            frame_resp.response.rect,
-                            ui.id().with(("fav_toggle", &address)),
-                            egui::Sense::click(),
-                        )
-                        .clicked()
-                    {
-                        desc_toggle_target = Some(address.clone());
-                    }
                     ui.add_space(1.0);
                 }
             });
