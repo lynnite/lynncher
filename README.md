@@ -15,6 +15,7 @@ A cross-platform launcher for Space Station 14 written in Rust. It builds and ru
 - Privacy changes
 - Opt-in automatic updates
 - Chinese localization
+- HWID spoof
 - Edgy logo
 - Rust
 
