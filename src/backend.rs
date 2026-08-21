@@ -10,6 +10,7 @@ mod content_db;
 mod download;
 mod extensions;
 mod http;
+mod hwid;
 mod launch;
 mod loader;
 mod loader_launch;
@@ -45,6 +46,7 @@ pub use download::{
     stage_sdl3_native_runtime,
 };
 pub use extensions::{list_sideloaded_extensions, remove_sideloaded_extension, sideload_extension_bundle};
+pub use hwid::*;
 pub use launch::launch_game_with_context;
 pub use loader::ensure_loader_installed;
 pub use loader_launch::{launch_game_via_loader, LoaderLaunchSpec};
@@ -67,4 +69,5 @@ pub use types::{
 
 pub(crate) use common::{app_data_name, display_path};
 pub(crate) use types::{APP_DATA_NAME, APP_VENDOR_DIR, CONFIG_FILE_NAME, SS14_DEFAULT_PORT};
+
 

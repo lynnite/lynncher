@@ -38,6 +38,19 @@ pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -
     fs::create_dir_all(&install_dir)
         .with_context(|| format!("creating {}", display_path(&install_dir)))?;
 
+    if let Some(bundled) = bundled_loader_src_dir() {
+        if copy_bundled_loader(&bundled, &loader_dir, &signing_key).is_ok()
+            && loader_exe.exists()
+            && signing_key.exists()
+        {
+            fix_loader_permissions(&loader_exe);
+            return Ok(LoaderInstall {
+                loader_exe,
+                signing_key,
+            });
+        }
+    }
+
     let client = http_client_with_proxy(proxy_url)?;
     let release = fetch_latest_release(&client)?;
 
@@ -107,6 +120,96 @@ pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -
         loader_exe,
         signing_key,
     })
+}
+
+/// Locate the SS14.Loader binaries bundled with this repository, if present.
+/// Returns the directory containing the loader files (mirroring the layout of
+/// the official release zip, i.e. a `bin/` folder plus a `signing_key` file).
+fn bundled_loader_src_dir() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [
+        manifest_dir.join("loader/bin_x64"),
+        manifest_dir.join("loader"),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.join("loader/bin_x64")))
+            .unwrap_or_default(),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.join("loader")))
+            .unwrap_or_default(),
+    ];
+
+    for dir in candidates {
+        let loader_dir = dir.join("loader");
+        let key = dir.join("signing_key");
+
+        let loader_present = if cfg!(target_os = "windows") {
+            loader_dir.join("SS14.Loader.exe").exists()
+        } else {
+            loader_dir.join("SS14.Loader").exists()
+        };
+
+        if loader_present && key.exists() {
+            return Some(dir);
+        }
+    }
+
+    None
+}
+
+fn copy_bundled_loader(
+    src_dir: &Path,
+    loader_dir: &Path,
+    signing_key: &Path,
+) -> std::io::Result<()> {
+    if loader_dir.exists() {
+        fs::remove_dir_all(loader_dir)?;
+    }
+    fs::create_dir_all(loader_dir)?;
+
+    let src_loader = src_dir.join("loader");
+    for entry in fs::read_dir(&src_loader)? {
+        let entry = entry?;
+        let target = loader_dir.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+
+    fs::copy(src_dir.join("signing_key"), signing_key)?;
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn fix_loader_permissions(loader_exe: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(loader_exe) {
+            let mode = meta.permissions().mode();
+            if mode & 0o100 == 0 {
+                let mut perms = meta.permissions();
+                perms.set_mode(mode | 0o755);
+                let _ = fs::set_permissions(loader_exe, perms);
+            }
+        }
+    }
 }
 
 fn extract_loader_parts(zip_path: &Path, loader_dir: &Path, signing_key: &Path) -> Result<()> {

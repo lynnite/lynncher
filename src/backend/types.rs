@@ -192,6 +192,14 @@ pub struct LauncherConfig {
     pub accounts: Vec<AccountProfile>,
     pub active_account_key: Option<String>,
     pub enabled_extensions: Vec<String>,
+    #[serde(default)]
+    pub hwid_mode: String,
+    #[serde(default)]
+    pub hwid_value: String,
+    #[serde(default)]
+    pub text_shadow: bool,
+    #[serde(default = "default_text_shadow_color")]
+    pub text_shadow_color: TextShadowColor,
 }
 
 impl Default for LauncherConfig {
@@ -222,7 +230,28 @@ impl Default for LauncherConfig {
             accounts: Vec::new(),
             active_account_key: None,
             enabled_extensions: Vec::new(),
+            hwid_mode: String::from("default"),
+            hwid_value: String::new(),
+            text_shadow: false,
+            text_shadow_color: TextShadowColor::default(),
         }
+    }
+}
+
+fn default_text_shadow_color() -> TextShadowColor {
+    TextShadowColor::default()
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TextShadowColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Default for TextShadowColor {
+    fn default() -> Self {
+        Self { r: 0, g: 0, b: 0 }
     }
 }
 

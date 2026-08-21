@@ -841,8 +841,23 @@ impl LauncherApp {
         let t_storage = self.t("options.storage", &[]);
         let t_clear_content = self.t("options.clear_content", &[]);
         let t_clear_engines = self.t("options.clear_engines", &[]);
+        let t_hwid = self.t("options.hwid", &[]);
+        let t_hwid_desc = self.t("options.hwid_desc", &[]);
+        let t_hwid_default = self.t("options.hwid_default", &[]);
+        let t_hwid_random = self.t("options.hwid_random", &[]);
+        let t_hwid_custom = self.t("options.hwid_custom", &[]);
+        let t_hwid_randomize = self.t("options.hwid_randomize", &[]);
+        let t_hwid_set = self.t("options.hwid_set", &[]);
+        let t_hwid_value_hint = self.t("options.hwid_value_hint", &[]);
+        let t_hwid_none = self.t("options.hwid_none", &[]);
+        let t_hwid_randomized = self.t("options.hwid_randomized", &[]);
+        let t_hwid_set_ok = self.t("options.hwid_set_ok", &[]);
+        let t_hwid_set_bad = self.t("options.hwid_set_bad", &[]);
+        let t_hwid_random_fail = self.t("options.hwid_random_fail", &[]);
         let t_appearance = self.t("options.appearance", &[]);
         let t_logo_text_only = self.t("options.logo_text_only", &[]);
+        let t_text_shadow = self.t("options.text_shadow", &[]);
+        let t_text_shadow_color = self.t("options.text_shadow_color", &[]);
         let t_select_font = self.t("options.select_font", &[]);
         let t_reset_font = self.t("options.reset_font", &[]);
         let t_font_ubuntu = self.t("options.font_ubuntu", &[]);
@@ -984,12 +999,109 @@ impl LauncherApp {
         });
 
         ui.separator();
+        ui.label(t_hwid);
+        ui.label(egui::RichText::new(&t_hwid_desc).small().weak());
+
+        let current = if self.hwid_current.trim().is_empty() {
+            crate::backend::read_hwid_hex()
+        } else {
+            self.hwid_current.clone()
+        };
+        if current.is_empty() {
+            ui.label(egui::RichText::new(&t_hwid_none).small().weak());
+        } else {
+            ui.label(egui::RichText::new(&current).small());
+        }
+
+        let modes: [(&str, &String); 3] = [
+            ("default", &t_hwid_default),
+            ("random", &t_hwid_random),
+            ("custom", &t_hwid_custom),
+        ];
+        let selected = self.cfg.hwid_mode.clone();
+        egui::ComboBox::from_id_salt("hwid_mode")
+            .selected_text(
+                modes
+                    .iter()
+                    .find(|(k, _)| **k == selected)
+                    .map(|(_, l)| l.as_str())
+                    .unwrap_or("default"),
+            )
+            .show_ui(ui, |ui| {
+                for (id, label) in &modes {
+                    if ui
+                        .selectable_label(self.cfg.hwid_mode == *id, label.as_str())
+                        .clicked()
+                    {
+                        self.cfg.hwid_mode = id.to_string();
+                    }
+                }
+            });
+
+        ui.horizontal(|ui| {
+            if ui.button(&t_hwid_randomize).clicked() {
+                match crate::backend::randomize_hwid() {
+                    Ok(hexstr) => {
+                        self.hwid_current = hexstr;
+                        self.hwid_feedback = t_hwid_randomized.clone();
+                    }
+                    Err(err) => {
+                        self.hwid_feedback = t_hwid_random_fail.replace("{0}", &err.to_string());
+                    }
+                }
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.hwid_input_buffer)
+                    .hint_text(&t_hwid_value_hint)
+                    .desired_width(260.0),
+            );
+            if ui.button(&t_hwid_set).clicked() {
+                match crate::backend::set_hwid_hex(&self.hwid_input_buffer) {
+                    Ok(hexstr) => {
+                        self.hwid_current = hexstr.clone();
+                        // Persist the value into the config so it is re-applied
+                        // on later launches (mode "custom").
+                        self.cfg.hwid_value = hexstr;
+                        self.hwid_feedback = t_hwid_set_ok.clone();
+                    }
+                    Err(_) => {
+                        self.hwid_feedback = t_hwid_set_bad.clone();
+                    }
+                }
+            }
+        });
+
+        if !self.hwid_feedback.trim().is_empty() {
+            ui.label(egui::RichText::new(&self.hwid_feedback).small());
+        }
+
+        ui.separator();
         ui.label(t_appearance);
 
         ui.checkbox(
             &mut self.cfg.logo_text_only,
             &t_logo_text_only,
         );
+
+        ui.checkbox(
+            &mut self.cfg.text_shadow,
+            &t_text_shadow,
+        );
+        if self.cfg.text_shadow {
+            let ts = &mut self.cfg.text_shadow_color;
+            ui.horizontal(|ui| {
+                ui.label(&t_text_shadow_color);
+                ui.add(egui::DragValue::new(&mut ts.r).range(0..=255).speed(1).prefix("R "));
+                ui.add(egui::DragValue::new(&mut ts.g).range(0..=255).speed(1).prefix("G "));
+                ui.add(egui::DragValue::new(&mut ts.b).range(0..=255).speed(1).prefix("B "));
+                let color = egui::Color32::from_rgb(ts.r, ts.g, ts.b);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 18.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 0.0, color);
+            });
+        }
 
         ui.horizontal(|ui| {
             if ui.button(&t_select_font).clicked() {

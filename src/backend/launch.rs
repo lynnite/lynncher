@@ -18,6 +18,8 @@ pub fn launch_game_with_context(
     selected_server: Option<&str>,
     server_info: Option<&ServerInfo>,
 ) -> Result<Child> {
+    super::hwid::apply_hwid_for_launch(cfg);
+
     if cfg.game_executable.trim().is_empty() {
         anyhow::bail!("Game executable path is empty");
     }
