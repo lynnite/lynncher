@@ -127,6 +127,8 @@ impl LauncherApp {
             }
         }
 
+        crate::backend::apply_hwid_for_launch(&self.cfg);
+
         let spec = LoaderLaunchSpec {
             engine_zip,
             engine_signature: signature,
@@ -151,8 +153,10 @@ impl LauncherApp {
 
         match launch_game_via_loader(&spec) {
             Ok(mut child) => {
-                let _ = child.wait();
+                // Hide the progress overlay as soon as the game has launched so
+                // the loading bar does not linger over the running client.
                 self.clear_progress();
+                let _ = child.wait();
             }
             Err(err) => return Err(err),
         }

@@ -25,6 +25,15 @@ cp "$BIN" "$STAGE/usr/bin/lynncher"
 cp packaging/usr/share/applications/lynncher.desktop "$STAGE/usr/share/applications/"
 cp logo.png "$STAGE/usr/share/pixmaps/lynncher.png"
 
+# Bundle the SS14.Loader binaries so the launcher can run standalone.
+if [ -d "loader/bin_x64" ]; then
+    mkdir -p "$STAGE/usr/bin/loader/bin_x64"
+    cp -r loader/bin_x64/loader "$STAGE/usr/bin/loader/bin_x64/"
+    cp loader/bin_x64/signing_key "$STAGE/usr/bin/loader/bin_x64/"
+else
+    echo "[build-linux] warning: no loader/bin_x64 directory found; launcher will download the loader at runtime." >&2
+fi
+
 if command -v dpkg-deb >/dev/null 2>&1; then
     dpkg-deb --build --root-owner-group "$STAGE" "$DEB"
 else
@@ -35,3 +44,4 @@ fi
 cp "$DEB" "$ASSET_NAME"
 echo "[build-linux] Built $DEB (also copied to $ASSET_NAME)"
 echo "[build-linux] Done."
+

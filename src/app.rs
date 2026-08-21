@@ -72,6 +72,12 @@ pub struct LauncherApp {
     font_source_initialized: bool,
     last_font_size: f32,
     last_font_lang: String,
+    hwid_input_buffer: String,
+    hwid_current: String,
+    hwid_feedback: String,
+    favorite_info_loading: std::collections::HashSet<String>,
+    favorite_info_result_pending:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, anyhow::Result<ServerInfo>>>>,
 }
 
 #[derive(Default, Clone)]
@@ -217,6 +223,13 @@ impl LauncherApp {
             font_source_initialized: false,
             last_font_size: 0.0,
             last_font_lang: String::new(),
+            hwid_input_buffer: String::new(),
+            hwid_current: String::new(),
+            hwid_feedback: String::new(),
+            favorite_info_loading: std::collections::HashSet::new(),
+            favorite_info_result_pending: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -255,23 +268,19 @@ impl LauncherApp {
         let progress = self.progress.clone();
         let connecting = self.connection_active();
 
-        let t_connecting = self.t("app.connecting", &[]);
         let Some(progress) = progress else {
-            if connecting {
-                ui.horizontal(|ui| {
-                    ui.label(t_connecting);
-                    if self.cancel_button(ui) {
-                        self.cancel_connection();
-                    }
-                });
-            }
+            // No active progress bar. When the client has been launched the
+            // download/launching phase is over, so there is nothing to show
+            // here (and no reason to offer a cancel button) any more.
             return;
         };
 
         let frac = progress.fraction.clamp(0.0, 1.0);
+        let label_color = ui.visuals().text_color();
+        let label_font = egui::FontId::proportional(self.cfg.font_size.clamp(8.0, 40.0));
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(&progress.label);
+                self.draw_text_with_shadow(ui, &progress.label, label_font.clone(), label_color);
                 let width = 200.0;
                 let height = 10.0;
                 let (rect, _) = ui.allocate_exact_size(
@@ -305,6 +314,36 @@ impl LauncherApp {
                 }
             }
         });
+    }
+
+    /// Draw a label, optionally adding a drop shadow below/behind it when the
+    /// text shadow setting is enabled. Returns the widget response.
+    fn draw_text_with_shadow(
+        &self,
+        ui: &mut egui::Ui,
+        text: &str,
+        font_id: egui::FontId,
+        color: egui::Color32,
+    ) -> egui::Response {
+        let painter = ui.painter().clone();
+        let galley = painter.layout_no_wrap(text.to_owned(), font_id.clone(), color);
+        let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+        if self.cfg.text_shadow {
+            let shadow_color = egui::Color32::from_rgb(
+                self.cfg.text_shadow_color.r,
+                self.cfg.text_shadow_color.g,
+                self.cfg.text_shadow_color.b,
+            );
+            let shadow_galley =
+                painter.layout_no_wrap(text.to_owned(), font_id.clone(), shadow_color);
+            painter.galley(
+                rect.min + egui::vec2(1.0, 1.0),
+                shadow_galley,
+                shadow_color,
+            );
+        }
+        painter.galley(rect.min, galley, color);
+        ui.allocate_rect(rect, egui::Sense::hover())
     }
 
     fn cancel_button(&mut self, ui: &mut egui::Ui) -> bool {
@@ -645,11 +684,11 @@ impl LauncherApp {
                 return;
             }
         }
-        ui.label(
-            egui::RichText::new("LYNNCHER")
-                .size(28.0)
-                .strong()
-                .color(egui::Color32::from_rgb(0xD5, 0xD5, 0xD5)),
+        self.draw_text_with_shadow(
+            ui,
+            "LYNNCHER",
+            egui::FontId::proportional(28.0),
+            egui::Color32::from_rgb(0xD5, 0xD5, 0xD5),
         );
     }
 

@@ -67,6 +67,12 @@ impl LauncherApp {
         style.visuals.widgets.open.bg_fill = button_a;
         style.visuals.widgets.inactive.weak_bg_fill = button_a;
 
+        style.visuals.widgets.noninteractive.weak_bg_fill = bg;
+        style.visuals.widgets.inactive.weak_bg_fill = button_a;
+        style.visuals.widgets.hovered.weak_bg_fill = hover_a;
+        style.visuals.widgets.active.weak_bg_fill = accent_a;
+        style.visuals.widgets.open.weak_bg_fill = hover_a;
+
         style.visuals.widgets.inactive.fg_stroke.color = fg;
         style.visuals.widgets.hovered.fg_stroke.color = fg;
         style.visuals.widgets.active.fg_stroke.color = fg;
@@ -451,21 +457,57 @@ impl LauncherApp {
     }
 
     pub(crate) fn ensure_favorite_infos(&mut self) {
+        // Drain any results produced by background fetchers from a previous
+        // call; this runs on every frame but only copies already-completed
+        // data, so it never blocks the UI.
+        self.poll_favorite_info_results();
+
         if self.cfg.favorite_servers.is_empty() {
             return;
         }
-        let options = self.hub_options();
-        for address in self.cfg.favorite_servers.clone() {
-            if self.favorite_infos.contains_key(&address) {
-                continue;
-            }
-            let info = fetch_server_info_from_hub_with_options(
-                &self.cfg.hub_server_url,
-                &address,
-                options.clone(),
-            )
-            .or_else(|_| fetch_server_info_direct_with_proxy(&address, options.proxy_url.as_deref()));
-            if let Ok(info) = info {
+
+        let missing: Vec<String> = self
+            .cfg
+            .favorite_servers
+            .clone()
+            .into_iter()
+            .filter(|a| !self.favorite_infos.contains_key(a))
+            .filter(|a| !self.favorite_info_loading.contains(a))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+
+        // Kick off background fetches for any favorites whose server info we do
+        // not have yet. Performing these requests on the UI thread is what
+        // previously made the Home page freeze / run at ~1 fps.
+        for address in missing {
+            self.favorite_info_loading.insert(address.clone());
+            let url = self.cfg.hub_server_url.clone();
+            let options = self.hub_options();
+            let pending = self.favorite_info_result_pending.clone();
+            std::thread::spawn(move || {
+                let result = fetch_server_info_from_hub_with_options(&url, &address, options.clone())
+                    .or_else(|_| {
+                        fetch_server_info_direct_with_proxy(&address, options.proxy_url.as_deref())
+                    });
+                if let Ok(mut slot) = pending.lock() {
+                    slot.insert(address, result);
+                }
+            });
+        }
+    }
+
+    fn poll_favorite_info_results(&mut self) {
+        let results = std::mem::take(
+            &mut *self
+                .favorite_info_result_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        for (address, result) in results {
+            self.favorite_info_loading.remove(&address);
+            if let Ok(info) = result {
                 self.favorite_infos.insert(address.clone(), info);
             }
         }

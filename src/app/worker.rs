@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use super::i18n::Localizer;
 use crate::backend::{
-    account_key, active_account_for_auth, apply_acz_inferred_urls, auth_mode_disabled,
+    account_key, active_account_for_auth, apply_acz_inferred_urls, apply_hwid_for_launch,
+    auth_mode_disabled,
     build_content_database, derive_connect_address, download_and_install_content,
     download_client_for_server_with_proxy_and_tokens, download_content_entries,
     download_content_zip, download_engine_client_for_version,
@@ -166,14 +167,19 @@ impl Connector {
         }
     }
 
-    fn reconnect_loop<F>(&self, mut launch: F, initial_msg: String)
+    /// Runs a game in a reconnecting loop. Returns `true` if the game managed
+    /// to start at least once, or `false` if the very first launch attempt
+    /// failed (which the caller can use to trigger a fresh-install retry).
+    fn reconnect_loop<F>(&self, mut launch: F, initial_msg: String) -> bool
     where
         F: FnMut() -> anyhow::Result<std::process::Child>,
     {
         let mut first = true;
+        let mut first_launch_ok = false;
         loop {
             match launch() {
                 Ok(mut child) => {
+                    first_launch_ok = true;
                     if first {
                         self.set_status(initial_msg.clone());
                         self.push_log(self.feedback_status());
@@ -183,8 +189,12 @@ impl Connector {
                         self.push_log(self.feedback_status());
                     }
 
-                    let _ = child.wait();
+                    // The game process has spawned; hide the progress overlay
+                    // immediately so the loading bar does not linger over the
+                    // launched client window while it is running.
                     self.clear_progress();
+
+                    let _ = child.wait();
                     if self.is_cancelled() || !self.cfg.auto_reconnect {
                         break;
                     }
@@ -207,6 +217,7 @@ impl Connector {
                 }
             }
         }
+        first_launch_ok
     }
 
     pub fn connect(&self, address: &str, mut info: ServerInfo) {
@@ -270,11 +281,68 @@ impl Connector {
                     }
                 }
 
-                let launched_msg = self.t("status.launched", &[&runtime_cfg.game_executable]);
-                self.reconnect_loop(
-                    || launch_game_with_context(&runtime_cfg, Some(address), Some(&info)),
-                    launched_msg,
-                );
+                let exe_dir = install
+                    .executable_path
+                    .parent()
+                    .map(|p| p.to_path_buf());
+
+                // Try to launch the freshly downloaded client. If the very
+                // first launch attempt fails (e.g. because of stale/corrupted
+                // files from an earlier engine/client download), clear the
+                // staging directory and re-download once before giving up.
+                let mut attempts = 0;
+                loop {
+                    let launched_msg = self.t("status.launched", &[&runtime_cfg.game_executable]);
+                    let ok = self.reconnect_loop(
+                        || launch_game_with_context(&runtime_cfg, Some(address), Some(&info)),
+                        launched_msg,
+                    );
+
+                    if ok || self.is_cancelled() {
+                        break;
+                    }
+
+                    attempts += 1;
+                    if attempts >= 2 {
+                        break;
+                    }
+
+                    self.push_log(
+                        "Initial launch failed; clearing stale client files and re-downloading...",
+                    );
+                    if let Some(dir) = &exe_dir {
+                        let _ = std::fs::remove_dir_all(dir);
+                    }
+
+                    match download_client_for_server_with_proxy_and_tokens(
+                        &self.paths,
+                        address,
+                        &info,
+                        proxy.as_deref(),
+                        &auth_tokens,
+                        cancel_flag.as_ref().map(Arc::as_ref),
+                    ) {
+                        Ok(install2) => {
+                            runtime_cfg.game_executable =
+                                install2.executable_path.to_string_lossy().into_owned();
+                            let exe2_dir = install2
+                                .executable_path
+                                .parent()
+                                .map(|p| p.to_path_buf());
+                            if let Some(dir) = exe2_dir {
+                                let _ = stage_sdl3_native_runtime(
+                                    &self.paths,
+                                    &dir,
+                                    proxy.as_deref(),
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            self.push_log(format!("Re-install failed: {err:#}"));
+                            break;
+                        }
+                    }
+                }
 
                 self.finish();
                 return;
@@ -587,6 +655,10 @@ impl Connector {
             }
         }
 
+        // Apply the configured HWID policy so the loader-launched client uses
+        // the desired hardware identifier.
+        apply_hwid_for_launch(&self.cfg);
+
         let spec = LoaderLaunchSpec {
             engine_zip,
             engine_signature: signature,
@@ -615,8 +687,12 @@ impl Connector {
         };
 
         loop {
-            let _ = child.wait();
+            // The game process has spawned; hide the progress overlay
+            // immediately so the loading bar does not linger over the
+            // launched client window while it is running.
             self.clear_progress();
+
+            let _ = child.wait();
             if self.is_cancelled() || !self.cfg.auto_reconnect {
                 break;
             }

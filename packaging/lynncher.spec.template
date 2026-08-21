@@ -31,8 +31,15 @@ install -D -m 0755 "$OLDPWD/target/release/ss14-launcher-rust" %{buildroot}%{_bi
 install -D -m 0644 "$OLDPWD/packaging/usr/share/applications/lynncher.desktop" %{buildroot}%{_datadir}/applications/lynncher.desktop
 install -D -m 0644 "$OLDPWD/logo.png" %{buildroot}%{_datadir}/pixmaps/lynncher.png
 
+# Bundle the SS14.Loader binaries so the launcher can run standalone.
+mkdir -p %{buildroot}%{_bindir}/loader/bin_x64
+cp -r "$OLDPWD/loader/bin_x64/loader" %{buildroot}%{_bindir}/loader/bin_x64/
+cp "$OLDPWD/loader/bin_x64/signing_key" %{buildroot}%{_bindir}/loader/bin_x64/
+
 %files
 %{_bindir}/lynncher
+%{_bindir}/loader/bin_x64/loader/*
+%{_bindir}/loader/bin_x64/signing_key
 %{_datadir}/applications/lynncher.desktop
 %{_datadir}/pixmaps/lynncher.png
 
@@ -44,3 +51,4 @@ fi
 %changelog
 * Mon Jan 01 2024 lynnite <lynnite@example.com> - @VERSION@-1
 - Initial packaging.
+
