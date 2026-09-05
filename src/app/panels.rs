@@ -159,7 +159,18 @@ impl LauncherApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_space(8.0);
-                nano_heading(ui, self.t("favorites.title", &[]));
+                ui.horizontal(|ui| {
+                    nano_heading(ui, self.t("favorites.title", &[]));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let t_refresh = self.t("favorites.refresh_hint", &[]);
+                        if ui.small_button("⟳").on_hover_text(t_refresh).clicked() {
+                            let msg = self.t("status.refreshing_home", &[]);
+                            self.status = msg;
+                            self.push_log(self.status.clone());
+                            self.refresh_home();
+                        }
+                    });
+                });
         ui.separator();
 
         if self.cfg.favorite_servers.is_empty() {

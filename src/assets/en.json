@@ -74,6 +74,7 @@
   "status.server_info_loaded": "Loaded server info for {0}",
   "status.hub_server_count": "Loaded {0} servers from hub",
   "status.hub_server_fail": "Failed to load hub servers: {0}",
+  "status.refreshing_home": "Refreshing Home…",
   "status.favorite_removed": "Removed favorite: {0}",
   "status.favorite_added": "Added favorite: {0}",
   "status.launched_loader": "Launched client through SS14.Loader",
@@ -98,6 +99,7 @@
   "favorites.offline": "offline",
   "favorites.event_log": "Event log",
   "favorites.no_events": "No events yet.",
+  "favorites.refresh_hint": "Refresh favorites and server status",
 
   "hub.search_hint": "Search For Servers…",
   "hub.filters_count": "Filters ({0}/{1})",

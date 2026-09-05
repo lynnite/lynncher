@@ -390,6 +390,12 @@ fn download_content_blobs(
         body.extend_from_slice(&(*idx as i32).to_le_bytes());
     }
 
+    eprintln!(
+        "[content] POST {download_url} protocol-version={} body_bytes={} (debug)",
+        DOWNLOAD_PROTOCOL_VERSION,
+        body.len()
+    );
+
     let response = client
         .post(download_url)
         .header("X-Robust-Download-Protocol", DOWNLOAD_PROTOCOL_VERSION.to_string())
@@ -400,9 +406,26 @@ fn download_content_blobs(
         .with_context(|| format!("requesting content blobs from {download_url}"))?;
 
     if !response.status().is_success() {
+        let status = response.status();
+        let body_preview = response
+            .text()
+            .ok()
+            .map(|t| {
+                let trimmed: String = t.trim().to_string();
+                const MAX_LEN: usize = 4000;
+                let mut cut = String::with_capacity(MAX_LEN);
+                for ch in trimmed.chars() {
+                    if cut.len() >= MAX_LEN {
+                        break;
+                    }
+                    cut.push(ch);
+                }
+                cut
+            })
+            .unwrap_or_else(|| String::from("<no text body>"));
         anyhow::bail!(
-            "content download responded with {} ({download_url})",
-            response.status()
+            "content download responded with {status} ({download_url}), requested {} blob indices. Server said: {body_preview}",
+            indices.len()
         );
     }
 
@@ -541,10 +564,27 @@ fn check_download_protocol(client: &Client, download_url: &str) -> Result<()> {
         .send()
         .with_context(|| format!("probing content download endpoint {download_url}"))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    let min_raw = response
+        .headers()
+        .get("X-Robust-Download-Min-Protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let max_raw = response
+        .headers()
+        .get("X-Robust-Download-Max-Protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    eprintln!(
+        "[content] OPTIONS {download_url} -> {status} (min-protocol={min_raw:?} max-protocol={max_raw:?})"
+    );
+
+    if !status.is_success() {
+        let _ = min_raw;
+        let _ = max_raw;
         anyhow::bail!(
             "content download endpoint OPTIONS responded with {} ({download_url})",
-            response.status()
+            status
         );
     }
 
@@ -740,5 +780,125 @@ mod tests {
         };
         assert_eq!(non_empty(build.manifest_hash.as_deref()), None);
         assert_eq!(non_empty(build.manifest_url.as_deref()), Some("http://x/manifest"));
+    }
+
+    #[test]
+    fn post_sends_single_protocol_header() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = stream.read(&mut buf).unwrap();
+            let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+
+            let body = vec![
+                0u8, 0, 0, 0, // flags: 0 (not pre-compressed)
+                5, 0, 0, 0, // uncompressed length
+                0x68, 0x65, 0x6c, 0x6c, 0x6f, // "hello"
+            ];
+            let mut resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
+            )
+            .into_bytes();
+            resp.extend_from_slice(&body);
+            let _ = stream.write_all(&resp);
+            let _ = stream.flush();
+            (head, body.len())
+        });
+
+        let url = format!("http://{addr}/download");
+        let client = crate::backend::http::http_client_for_content(None).unwrap();
+        let mut body = Vec::with_capacity(9062 * 4);
+        for i in 0..9062u32 {
+            body.extend_from_slice(&i.to_le_bytes());
+        }
+        let resp = client
+            .post(&url)
+            .header("X-Robust-Download-Protocol", "1")
+            .header(reqwest::header::ACCEPT_ENCODING, "zstd")
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(body)
+            .send()
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let (raw_req, _) = server.join().unwrap();
+
+        let lower = raw_req.to_ascii_lowercase();
+        let needle = "x-robust-download-protocol:";
+        let occurrences = lower.matches(needle).count();
+        assert!(
+            occurrences == 1,
+            "expected exactly one X-Robust-Download-Protocol header, got {occurrences};\nraw request:\n{raw_req}"
+        );
+    }
+
+    #[test]
+    fn redirect_does_not_duplicate_protocol_header() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = std::thread::spawn(move || {
+            let mut heads = Vec::new();
+            for idx in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = vec![0u8; 8192];
+                let n = stream.read(&mut buf).unwrap();
+                heads.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+
+                if idx == 0 {
+                    let loc = format!("http://{addr}/download2");
+                    let resp = format!(
+                        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                } else {
+                    let body = vec![0u8, 0, 0, 0, 5, 0, 0, 0, 1, 2, 3, 4];
+                    let mut resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len(),
+                    )
+                    .into_bytes();
+                    resp.extend_from_slice(&body);
+                    let _ = stream.write_all(&resp);
+                }
+                let _ = stream.flush();
+            }
+            heads
+        });
+
+        let url = format!("http://{addr}/download");
+        let client = crate::backend::http::http_client_for_content(None).unwrap();
+        let body = vec![7u8, 0, 0, 0]; // small body
+        let resp = client
+            .post(&url)
+            .header("X-Robust-Download-Protocol", "1")
+            .header(reqwest::header::ACCEPT_ENCODING, "zstd")
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(body)
+            .send()
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let heads = server.join().unwrap();
+        assert_eq!(heads.len(), 2, "expected a redirect + follow-up, got {heads:?}");
+
+        for (i, head) in heads.iter().enumerate() {
+            let lower = head.to_ascii_lowercase();
+            let cnt = lower.matches("x-robust-download-protocol:").count();
+            assert_eq!(
+                cnt, 1,
+                "request #{i} sent {cnt} protocol headers after redirect; raw:\n{head}"
+            );
+        }
     }
 }

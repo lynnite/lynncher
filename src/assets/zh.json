@@ -74,6 +74,7 @@
   "status.server_info_loaded": "已获取服务器信息：{0}",
   "status.hub_server_count": "已从中心加载 {0} 个服务器",
   "status.hub_server_fail": "从中心加载服务器失败：{0}",
+  "status.refreshing_home": "正在刷新首页…",
   "status.favorite_removed": "已移除收藏：{0}",
   "status.favorite_added": "已添加收藏：{0}",
   "status.launched_loader": "已通过 SS14.Loader 启动客户端",
@@ -98,6 +99,7 @@
   "favorites.offline": "离线",
   "favorites.event_log": "事件日志",
   "favorites.no_events": "暂无事件。",
+  "favorites.refresh_hint": "刷新收藏与服务器状态",
 
   "hub.search_hint": "搜索服务器…",
   "hub.filters_count": "筛选（{0}/{1}）",
