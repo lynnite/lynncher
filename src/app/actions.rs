@@ -308,6 +308,13 @@ impl LauncherApp {
         }
     }
 
+    pub(crate) fn refresh_home(&mut self) {
+        self.refresh_hub_servers();
+        self.favorite_infos.clear();
+        self.favorite_info_loading.clear();
+        self.favorite_desc_visible.clear();
+    }
+
     pub(crate) fn start_background_connect(&mut self, address: &str, info: ServerInfo) {
         let paths = self.paths.clone();
         let cfg = self.cfg.clone();

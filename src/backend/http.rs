@@ -20,12 +20,19 @@ pub(crate) fn http_client_with_proxy_and_timeout(
 ) -> Result<Client> {
     let mut builder = Client::builder().user_agent("ss14-launcher-rust/0.1");
 
-    if let Some(url) = proxy_url {
-        let trimmed = url.trim();
-        if !trimmed.is_empty() {
-            let proxy = Proxy::all(trimmed)
-                .with_context(|| format!("invalid proxy URL: {trimmed}"))?;
+    let explicit_proxy = proxy_url
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    match explicit_proxy {
+        Some(url) => {
+            eprintln!("[http] building client with explicit proxy: {url}");
+            let proxy = Proxy::all(&url).with_context(|| format!("invalid proxy URL: {url}"))?;
             builder = builder.proxy(proxy);
+        }
+        None => {
+        builder = builder.no_proxy();
         }
     }
 
@@ -40,3 +47,4 @@ pub(crate) fn http_client_with_proxy_and_timeout(
 pub(crate) fn hub_http_client(options: HubRequestOptions) -> Result<Client> {
     http_client_with_proxy(options.proxy_url.as_deref())
 }
+

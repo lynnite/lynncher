@@ -454,46 +454,23 @@ impl Connector {
                             self.push_log(
                                 "Server has no complete manifest download; trying content ZIP.",
                             );
-                            match download_content_zip(
-                                &self.paths,
+                            content_downloaded = self.try_install_content_zip(
                                 address,
                                 build,
                                 proxy.as_deref(),
-                            ) {
-                                Ok(Some(content_dir)) => {
-                                    if let Some(engine_dir) = engine_exe.parent() {
-                                        match merge_content_into(&content_dir, engine_dir) {
-                                            Ok(()) => {
-                                                content_downloaded = true;
-                                                self.push_log(format!(
-                                                    "Installed game content from ZIP into {}",
-                                                    engine_dir.to_string_lossy()
-                                                ));
-                                            }
-                                            Err(err) => {
-                                                self.push_log(format!(
-                                                    "Failed to merge ZIP content into engine dir: {err:#}"
-                                                ));
-                                            }
-                                        }
-                                    }
-                                }
-                                Ok(None) => {
-                                    self.push_log(
-                                        "Server provides neither a manifest download nor a content ZIP URL.",
-                                    );
-                                }
-                                Err(err) => {
-                                    self.push_log(format!(
-                                        "Game content ZIP download failed: {err:#}"
-                                    ));
-                                }
-                            }
+                                &engine_exe,
+                            );
                         }
                         Err(err) => {
                             self.push_log(format!(
-                                "Game content manifest download failed: {err:#}"
+                                "Game content manifest download failed: {err:#}; trying content ZIP."
                             ));
+                            content_downloaded = self.try_install_content_zip(
+                                address,
+                                build,
+                                proxy.as_deref(),
+                                &engine_exe,
+                            );
                         }
                     }
                 }
@@ -717,6 +694,44 @@ impl Connector {
         }
 
         Ok(true)
+    }
+
+    fn try_install_content_zip(
+        &self,
+        address: &str,
+        build: &crate::backend::ServerBuildInformation,
+        proxy: Option<&str>,
+        engine_exe: &Path,
+    ) -> bool {
+        match download_content_zip(&self.paths, address, build, proxy) {
+            Ok(Some(content_dir)) => {
+                if let Some(engine_dir) = engine_exe.parent() {
+                    match merge_content_into(&content_dir, engine_dir) {
+                        Ok(()) => {
+                            self.push_log(format!(
+                                "Installed game content from ZIP into {}",
+                                engine_dir.to_string_lossy()
+                            ));
+                            return true;
+                        }
+                        Err(err) => {
+                            self.push_log(format!(
+                                "Failed to merge ZIP content into engine dir: {err:#}"
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                self.push_log(
+                    "Server provides neither a usable manifest download nor a content ZIP URL.",
+                );
+            }
+            Err(err) => {
+                self.push_log(format!("Game content ZIP download failed: {err:#}"));
+            }
+        }
+        false
     }
 
     fn has_game_content(exe_dir: &Path) -> bool {
