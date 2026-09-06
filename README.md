@@ -10,7 +10,7 @@ A cross-platform launcher for Space Station 14 written in Rust. It builds and ru
 - Basic event log and visible data paths
 - Choose your hub server. default `https://hub.playss14.com/`
 - Choose your auth server. default `https://auth.playss14.com/`
-- Sideload content bundles (has not been tested yet so be careful, i recommend [sanabilaucher](https://github.com/LaCumbiaDelCoronavirus/SanabiLauncher) for this)
+- Sideload content bundles (has not been tested yet and isn't the focus of this launcher, i recommend [sanabilaucher](https://github.com/LaCumbiaDelCoronavirus/SanabiLauncher) for this)
 - Auto-reconnect to last server disconnected setting
 - Privacy changes
 - Opt-in automatic updates
