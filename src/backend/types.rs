@@ -274,17 +274,17 @@ pub struct HubServerEntry {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerStatus {
-    #[serde(rename = "name")]
+    #[serde(rename = "name", default)]
     pub name: Option<String>,
-    #[serde(rename = "players")]
+    #[serde(rename = "players", default)]
     pub players: i32,
-    #[serde(rename = "soft_max_players")]
-    pub soft_max_players: i32,
-    #[serde(rename = "round_start_time")]
+    #[serde(rename = "soft_max_players", default)]
+    pub soft_max_players: Option<i32>,
+    #[serde(rename = "round_start_time", default)]
     pub round_start_time: Option<String>,
-    #[serde(rename = "run_level")]
+    #[serde(rename = "run_level", default)]
     pub run_level: Option<serde_json::Value>,
-    #[serde(rename = "tags")]
+    #[serde(rename = "tags", default)]
     pub tags: Option<Vec<String>>,
 }
 
