@@ -24,6 +24,13 @@ pub(crate) fn nano_heading(ui: &mut egui::Ui, text: impl Into<String>) {
 
 
 
+fn format_players(players: i32, soft_max_players: Option<i32>) -> String {
+    match soft_max_players {
+        Some(max) if max > 0 => format!("{players} / {max}"),
+        _ => format!("{players} / \u{221E}"),
+    }
+}
+
 fn format_round_time(server: &HubServerEntry) -> String {
     let Some(start) = server.status_data.round_start_time.as_deref() else {
         return String::from("—");
@@ -248,10 +255,9 @@ impl LauncherApp {
                                         );
                                         if let Some(entry) = server_entry {
                                             ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{} / {}",
+                                                egui::RichText::new(format_players(
                                                     entry.status_data.players,
-                                                    entry.status_data.soft_max_players
+                                                    entry.status_data.soft_max_players,
                                                 ))
                                                 .small()
                                                 .strong()
@@ -581,10 +587,9 @@ impl LauncherApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "{} / {}",
+                                        egui::RichText::new(format_players(
                                             server.status_data.players,
-                                            server.status_data.soft_max_players
+                                            server.status_data.soft_max_players,
                                         ))
                                         .strong()
                                         .color(GOLD),
