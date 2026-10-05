@@ -20,9 +20,12 @@ mod uri;
 
 pub use accounts::{
     account_key,
+    account_token_expired,
+    account_token_needs_refresh,
     active_account_for_auth,
     auth_mode_disabled,
     remove_account,
+    update_account_token,
     upsert_account,
 };
 pub use api::{
@@ -30,6 +33,7 @@ pub use api::{
     fetch_hub_servers_with_options,
     fetch_server_info_direct_with_proxy,
     fetch_server_info_from_hub_with_options,
+    refresh_account_token,
 };
 pub use common::normalize_base_url;
 pub use config::{ensure_dirs, launcher_paths, load_config, load_config_from_path, save_config};

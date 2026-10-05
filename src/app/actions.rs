@@ -1,9 +1,11 @@
 use eframe::egui;
 
 use crate::backend::{
-    account_key, check_latest_release, download_and_apply_update, fetch_hub_servers_with_options,
+    account_key, account_token_expired, account_token_needs_refresh, check_latest_release,
+    download_and_apply_update, fetch_hub_servers_with_options,
     fetch_server_info_direct_with_proxy, fetch_server_info_from_hub_with_options, is_newer_tag,
-    latest_release_url, normalize_base_url, save_config, HubRequestOptions, ServerInfo,
+    latest_release_url, normalize_base_url, refresh_account_token, save_config,
+    update_account_token, HubRequestOptions, ServerInfo,
 };
 
 use super::LauncherApp;
@@ -139,6 +141,99 @@ impl LauncherApp {
                 .unwrap_or_else(|| self.t("account.unknown", &[])),
             None => String::from("None"),
         }
+    }
+
+
+    pub(crate) fn request_account_refresh(&mut self) {
+        self.account_refresh_requested = true;
+    }
+
+    pub(crate) fn ensure_account_refresh(&mut self) {
+        let pending = std::mem::take(
+            &mut *self
+                .account_refresh_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        if let Some((key, result)) = pending {
+            self.account_refresh_in_flight = false;
+            match result {
+                Ok((token, expire_time)) => {
+                    if update_account_token(&mut self.cfg, &key, token, expire_time) {
+                        self.account_refresh_attempted.remove(&key);
+                        let msg = self.t("account.token_refreshed", &[]);
+                        self.status = msg.clone();
+                        self.push_log(msg);
+                        self.last_saved_config = None; // force a save
+                    }
+                }
+                Err(err) => {
+                    if let Some(account) = self.active_account() {
+                        if account_token_expired(account) {
+                            let msg = self.t("account.token_expired", &[]);
+                            self.status = msg.clone();
+                            self.push_log(msg);
+                        } else {
+                            let msg = self.t("account.token_refresh_fail", &[&err.to_string()]);
+                            self.status = msg.clone();
+                            self.push_log(msg);
+                        }
+                    } else {
+                        let msg = self.t("account.token_refresh_fail", &[&err.to_string()]);
+                        self.status = msg.clone();
+                        self.push_log(msg);
+                    }
+                }
+            }
+        }
+
+        if self.account_refresh_in_flight {
+            return;
+        }
+
+        let Some((key, auth_server, token, needs)) = self.active_account().map(|acc| {
+            (
+                account_key(&acc.auth_server, &acc.user_id),
+                normalize_base_url(&acc.auth_server),
+                acc.token.clone(),
+                account_token_needs_refresh(acc),
+            )
+        }) else {
+            return;
+        };
+
+        let explicit = self.account_refresh_requested;
+        if !needs && !explicit {
+            return;
+        }
+        if !explicit && self.account_refresh_attempted.contains(&key) {
+            return;
+        }
+        if token.trim().is_empty() {
+            self.account_refresh_requested = false;
+            return;
+        }
+
+        self.account_refresh_requested = false;
+        self.account_refresh_in_flight = true;
+        self.account_refresh_attempted.insert(key.clone());
+
+        let proxy = self.hub_options().proxy_url;
+        let slot = self.account_refresh_pending.clone();
+        std::thread::spawn(move || {
+            let result = refresh_account_token(&auth_server, token.trim(), proxy.as_deref());
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some((key, result));
+            }
+        });
+    }
+
+    fn active_account(&self) -> Option<&crate::backend::AccountProfile> {
+        let key = self.cfg.active_account_key.as_deref()?;
+        self.cfg
+            .accounts
+            .iter()
+            .find(|acc| account_key(&acc.auth_server, &acc.user_id) == key)
     }
 
     pub(crate) fn hub_options(&self) -> HubRequestOptions {

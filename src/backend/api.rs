@@ -120,6 +120,42 @@ pub fn authenticate_account_with_proxy(
     anyhow::bail!("auth server responded with {}", response.status())
 }
 
+pub fn refresh_account_token(
+    auth_url: &str,
+    token: &str,
+    proxy_url: Option<&str>,
+) -> Result<(String, DateTime<Utc>)> {
+    let auth_base = normalize_base_url(auth_url);
+    let client = http::http_client_with_proxy(proxy_url)?;
+    let url = format!("{auth_base}api/auth/refresh");
+
+    let payload = serde_json::json!({ "token": token });
+
+    let response = client
+        .post(url)
+        .json(&payload)
+        .send()
+        .context("sending token refresh request")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("auth server refresh responded with {}", response.status());
+    }
+
+    let body = response
+        .json::<RefreshResponse>()
+        .context("parsing token refresh response")?;
+
+    Ok((body.new_token, body.expire_time))
+}
+
+#[derive(Debug, Deserialize)]
+struct RefreshResponse {
+    #[serde(rename = "newToken", alias = "NewToken")]
+    new_token: String,
+    #[serde(rename = "expireTime", alias = "ExpireTime")]
+    expire_time: DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 struct AuthSuccessResponse {
     #[serde(rename = "token", alias = "Token")]
@@ -131,5 +167,3 @@ struct AuthSuccessResponse {
     #[serde(rename = "expireTime", alias = "ExpireTime")]
     expire_time: DateTime<Utc>,
 }
-
-
