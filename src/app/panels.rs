@@ -4,7 +4,7 @@ use crate::backend::{
     fetch_server_info_direct_with_proxy, fetch_server_info_from_hub_with_options,
     list_sideloaded_extensions, load_config_from_path,
     normalize_base_url, remove_sideloaded_extension, save_config, sideload_extension_bundle,
-    ColorScheme, HubServerEntry, ServerInfo,
+    ColorScheme, HubServerEntry, ServerInfo, DEFAULT_HUB_SERVER,
 };
 
 use super::LauncherApp;
@@ -850,6 +850,10 @@ impl LauncherApp {
         let t_proxy_enable = self.t("options.proxy_enable", &[]);
         let t_proxy_settings = self.t("options.proxy_settings", &[]);
         let t_proxy_presets = self.t("options.proxy_presets", &[]);
+        let t_hub_server = self.t("options.hub_server", &[]);
+        let t_hub_server_hint = self.t("options.hub_server_hint", &[]);
+        let t_hub_server_desc = self.t("options.hub_server_desc", &[]);
+        let t_hub_server_reset = self.t("options.hub_server_reset", &[]);
         let t_none = self.t("hub.none", &[]);
         let t_connection = self.t("options.connection", &[]);
         let t_auto_reconnect = self.t("options.auto_reconnect", &[]);
@@ -990,6 +994,21 @@ impl LauncherApp {
             });
         ui.visuals_mut().widgets.inactive.bg_fill = old_inactive;
         ui.visuals_mut().widgets.hovered.bg_fill = old_hovered;
+
+        ui.add_space(6.0);
+        ui.label(&t_hub_server);
+        ui.label(egui::RichText::new(&t_hub_server_desc).small().weak());
+        let hub_edit = ui.add(
+            egui::TextEdit::singleline(&mut self.cfg.hub_server_url)
+                .hint_text(&t_hub_server_hint)
+                .desired_width(300.0),
+        );
+        if hub_edit.lost_focus() {
+            self.cfg.hub_server_url = normalize_base_url(&self.cfg.hub_server_url);
+        }
+        if ui.button(&t_hub_server_reset).clicked() {
+            self.cfg.hub_server_url = DEFAULT_HUB_SERVER.to_string();
+        }
 
         ui.separator();
         ui.label(t_connection);

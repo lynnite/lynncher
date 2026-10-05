@@ -78,6 +78,11 @@ pub struct LauncherApp {
     favorite_info_loading: std::collections::HashSet<String>,
     favorite_info_result_pending:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, anyhow::Result<ServerInfo>>>>,
+    account_refresh_pending:
+        std::sync::Arc<std::sync::Mutex<Option<(String, anyhow::Result<(String, chrono::DateTime<chrono::Utc>)>)>>>,
+    account_refresh_in_flight: bool,
+    account_refresh_requested: bool,
+    account_refresh_attempted: std::collections::HashSet<String>,
 }
 
 #[derive(Default, Clone)]
@@ -230,6 +235,10 @@ impl LauncherApp {
             favorite_info_result_pending: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            account_refresh_pending: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            account_refresh_in_flight: false,
+            account_refresh_requested: false,
+            account_refresh_attempted: std::collections::HashSet::new(),
         }
     }
 
@@ -380,6 +389,7 @@ impl eframe::App for LauncherApp {
         self.poll_background();
         self.poll_update_action();
         self.poll_hub_server_info(ctx);
+        self.ensure_account_refresh();
         self.run_auto_update();
         self.save_config_if_dirty();
 
@@ -824,8 +834,8 @@ fn build_font_definitions(custom_path: &str, lang: &str) -> egui::FontDefinition
         }
     }
 
-    if lang == i18n::LANG_ZH {
-        if let Some(cjk) = load_system_cjk_font() {
+    if lang == i18n::LANG_ZH || lang == i18n::LANG_JA {
+        if let Some(cjk) = load_system_cjk_font(lang == i18n::LANG_JA) {
             let (name, bytes) = cjk;
             fonts
                 .font_data
@@ -857,7 +867,29 @@ fn build_font_definitions(custom_path: &str, lang: &str) -> egui::FontDefinition
     fonts
 }
 
-fn load_system_cjk_font() -> Option<(String, Vec<u8>)> {
+fn load_system_cjk_font(prefer_japanese: bool) -> Option<(String, Vec<u8>)> {
+    const JAPANESE_NAMES: &[&str] = &[
+        "NotoSansJP-Regular.otf",
+        "NotoSansJP-Regular.ttf",
+        "NotoSansCJKjp-Regular.otf",
+        "NotoSansCJKjp-Regular.ttc",
+        "SourceHanSansJP-Regular.otf",
+        "SourceHanSansJ-Regular.otf",
+        "SourceHanSansJP-Normal.otf",
+        "ipaexg.ttf",
+        "ipag.ttf",
+        "ipagp.ttf",
+        "ipam.ttf",
+        "ipamp.ttf",
+        "meiryo.ttc",
+        "msgothic.ttc",
+        "msmincho.ttc",
+        "YuGothR.ttc",
+        "YuGothM.ttc",
+        "NotoSansCJK-Regular.ttc",
+        "Noto Sans CJK JP Regular.otf",
+    ];
+
     const PREFERRED_NAMES: &[&str] = &[
         "NotoSansCJK-Regular.ttc",
         "NotoSansCJKsc-Regular.otf",
@@ -898,6 +930,20 @@ fn load_system_cjk_font() -> Option<(String, Vec<u8>)> {
     {
         if let Some(windir) = std::env::var_os("WINDIR") {
             roots.push(std::path::PathBuf::from(windir).join("Fonts"));
+        }
+    }
+
+    if prefer_japanese {
+        for name in JAPANESE_NAMES {
+            for root in &roots {
+                if let Some(p) = find_file_named(root, name) {
+                    if let Ok(bytes) = std::fs::read(&p) {
+                        if !bytes.is_empty() {
+                            return Some((name.to_string(), bytes));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1145,6 +1191,26 @@ mod tests {
         let font = font.unwrap();
 
         let samples = "中文设置服务器收藏家选项连接语言账号更新保存取消直接";
+        for ch in samples.chars() {
+            let glyph_id = font.glyph_id(ch);
+            assert_ne!(
+                glyph_id.0,
+                0,
+                "bundled CJK font is missing glyph for U+{:04X} ({})",
+                ch as u32,
+                ch
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_cjk_font_has_japanese_glyphs() {
+        let bytes: &[u8] = include_bytes!("assets/DroidSansFallbackFull.ttf");
+        let font = ab_glyph::FontArc::try_from_vec(bytes.to_vec());
+        assert!(font.is_ok(), "bundled Droid CJK font failed to parse");
+        let font = font.unwrap();
+
+        let samples = "あいうえおアイウエオ日本語接続設定サーバー保存更新お気に入り選択";
         for ch in samples.chars() {
             let glyph_id = font.glyph_id(ch);
             assert_ne!(

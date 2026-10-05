@@ -31,11 +31,16 @@ impl LauncherApp {
             if ui.selectable_label(self.cfg.active_account_key.is_none(), t_no_account).clicked() {
                 self.cfg.active_account_key = None;
             }
+            let mut switched = false;
             for (key, label) in &account_items {
                 let selected = self.cfg.active_account_key.as_deref() == Some(key.as_str());
                 if ui.selectable_label(selected, label).clicked() {
                     self.cfg.active_account_key = Some(key.clone());
+                    switched = true;
                 }
+            }
+            if switched {
+                self.request_account_refresh();
             }
 
             ui.separator();
@@ -117,6 +122,7 @@ impl LauncherApp {
                             self.push_log(self.status.clone());
                             self.show_add_account_modal = false;
                             close_requested = true;
+                            self.request_account_refresh();
                         }
                         Err(err) => {
                             self.status = self.t("account.auth_fail", &[&err.to_string()]);

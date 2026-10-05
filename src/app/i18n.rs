@@ -2,11 +2,13 @@ use std::collections::HashMap;
 
 pub const LANG_EN: &str = "en";
 pub const LANG_ZH: &str = "zh";
+pub const LANG_JA: &str = "ja";
 pub const DEFAULT_LANG: &str = LANG_EN;
 
 pub const LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
     ("zh", "Chinese"),
+    ("ja", "Japanese"),
 ];
 
 #[derive(Default, Clone)]
@@ -33,6 +35,7 @@ impl Localizer {
         self.language = language.to_string();
         match language {
             LANG_ZH => self.table = load_table(include_str!("../assets/zh.json")),
+            LANG_JA => self.table = load_table(include_str!("../assets/ja.json")),
             _ => self.table = load_table(include_str!("../assets/en.json")),
         }
     }
