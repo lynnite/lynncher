@@ -893,6 +893,12 @@ impl LauncherApp {
         let t_center_image_hover = self.t("options.center_image_hover", &[]);
         let t_no_background_pos = self.t("options.no_background_pos", &[]);
         let t_pause_animations = self.t("options.pause_animations", &[]);
+        let t_cursor_header = self.t("options.cursor_header", &[]);
+        let t_forward_cursor_theme = self.t("options.forward_cursor_theme", &[]);
+        let t_forward_cursor_theme_hint = self.t("options.forward_cursor_theme_hint", &[]);
+        let t_cursor_theme_auto = self.t("options.cursor_theme_auto", &[]);
+        let t_cursor_theme = self.t("options.cursor_theme", &[]);
+        let t_cursor_theme_hint = self.t("options.cursor_theme_hint", &[]);
         let t_color_scheme = self.t("options.color_scheme", &[]);
         let t_c_bg = self.t("options.color_background", &[]);
         let t_c_top = self.t("options.color_topbar", &[]);
@@ -1304,6 +1310,29 @@ impl LauncherApp {
             &mut self.cfg.pause_animations_unfocused,
             &t_pause_animations,
         );
+
+        ui.add_space(6.0);
+        ui.label(&t_cursor_header);
+        ui.checkbox(
+            &mut self.cfg.forward_cursor_theme,
+            &t_forward_cursor_theme,
+        )
+        .on_hover_text(&t_forward_cursor_theme_hint);
+        ui.horizontal(|ui| {
+            ui.label(&t_cursor_theme);
+            let hint = if self.cfg.cursor_theme.trim().is_empty() {
+                t_cursor_theme_auto.clone()
+            } else {
+                t_cursor_theme_hint.clone()
+            };
+            let edit = ui.add_enabled(
+                self.cfg.forward_cursor_theme,
+                egui::TextEdit::singleline(&mut self.cfg.cursor_theme)
+                    .hint_text(t_cursor_theme_auto.clone())
+                    .desired_width(220.0),
+            );
+            edit.on_hover_text(hint);
+        });
 
         ui.separator();
         ui.separator();

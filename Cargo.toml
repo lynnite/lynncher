@@ -1,6 +1,6 @@
 [package]
 name = "ss14-launcher-rust"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 
@@ -33,4 +33,6 @@ winreg = "0.52"
 [dev-dependencies]
 ab_glyph = "0.2"
 
-
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"

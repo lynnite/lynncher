@@ -7,6 +7,7 @@ mod common;
 mod config;
 mod content;
 mod content_db;
+mod cursor;
 mod download;
 mod extensions;
 mod http;
@@ -41,6 +42,7 @@ pub use uri::apply_acz_inferred_urls;
 pub use uri::derive_connect_address;
 pub use updates::{check_latest_release, is_newer_tag, latest_release_url, download_and_apply_update, cleanup_stale_update};
 pub use content::{download_and_install_content, download_content_zip, download_content_entries, merge_content_into};
+pub use cursor::apply_cursor_env_with_override;
 pub use download::{
     download_client_for_server_with_proxy_and_tokens,
     download_engine_client_for_version,

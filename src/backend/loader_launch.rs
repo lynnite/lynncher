@@ -1,4 +1,3 @@
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -38,6 +37,8 @@ pub struct LoaderLaunchSpec {
     pub auth_server: Option<String>,
     pub auth_pubkey: Option<String>,
     pub disable_signing: bool,
+    pub forward_cursor_theme: bool,
+    pub cursor_theme: Option<String>,
 }
 
 pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::Child> {
@@ -54,6 +55,10 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
     let mut command = Command::new(&spec.loader_exe);
     if let Some(parent) = spec.loader_exe.parent() {
         command.current_dir(parent);
+    }
+
+    if spec.forward_cursor_theme {
+        super::apply_cursor_env_with_override(&mut command, spec.cursor_theme.as_deref());
     }
 
     command.arg(spec.engine_zip.as_os_str());
