@@ -58,6 +58,10 @@ pub fn launch_game_with_context(
         Command::new(&executable)
     };
 
+    if cfg.forward_cursor_theme {
+        super::apply_cursor_env_with_override(&mut command, Some(&cfg.cursor_theme));
+    }
+
     if let Some(parent) = executable.parent() {
         command.current_dir(parent);
 

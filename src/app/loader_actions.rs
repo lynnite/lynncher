@@ -149,6 +149,8 @@ impl LauncherApp {
             auth_server,
             auth_pubkey,
             disable_signing,
+            forward_cursor_theme: self.cfg.forward_cursor_theme,
+            cursor_theme: Some(self.cfg.cursor_theme.clone()),
         };
 
         match launch_game_via_loader(&spec) {

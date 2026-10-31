@@ -27,6 +27,10 @@ fn default_pause_gifs_unfocused() -> bool {
     true
 }
 
+fn default_forward_cursor_theme() -> bool {
+    true
+}
+
 fn default_logo_text_only() -> bool {
     false
 }
@@ -200,6 +204,10 @@ pub struct LauncherConfig {
     pub text_shadow: bool,
     #[serde(default = "default_text_shadow_color")]
     pub text_shadow_color: TextShadowColor,
+    #[serde(default = "default_forward_cursor_theme")]
+    pub forward_cursor_theme: bool,
+    #[serde(default)]
+    pub cursor_theme: String,
 }
 
 impl Default for LauncherConfig {
@@ -234,6 +242,8 @@ impl Default for LauncherConfig {
             hwid_value: String::new(),
             text_shadow: false,
             text_shadow_color: TextShadowColor::default(),
+            forward_cursor_theme: true,
+            cursor_theme: String::new(),
         }
     }
 }
