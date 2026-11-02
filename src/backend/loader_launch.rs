@@ -150,6 +150,7 @@ pub struct LoaderLaunchSpec {
     pub forward_cursor_theme: bool,
     pub cursor_theme: Option<String>,
     pub fps_limit: Option<u32>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fps_shim_dir: Option<PathBuf>,
 }
 
@@ -224,6 +225,7 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
     command.arg("--cvar");
     command.arg("launch.launcher=true");
 
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
     let mut fps_shim_path: Option<PathBuf> = None;
     if let Some(fps) = spec.fps_limit {
         if fps > 0 {
