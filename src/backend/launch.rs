@@ -115,6 +115,62 @@ pub fn launch_game_with_context(
         }
     }
 
+    if cfg.fps_limit > 0 {
+        let engine_dir = executable.parent().map(|p| p.to_path_buf());
+        let cap_cvar = engine_dir
+            .as_ref()
+            .map(|d| super::loader_launch::detect_fps_cap_cvar(&[d.clone()], None))
+            .unwrap_or(super::loader_launch::FpsCapCvar::Unsupported);
+        match cap_cvar {
+            super::loader_launch::FpsCapCvar::DisplayMaxFps => {
+                command.arg("--cvar");
+                command.arg("display.vsync=false");
+                command.arg("--cvar");
+                command.arg(format!("display.max_fps={}", cfg.fps_limit));
+            }
+            super::loader_launch::FpsCapCvar::FpsCapMax => {
+                command.arg("--cvar");
+                command.arg("display.vsync=false");
+                command.arg("--cvar");
+                command.arg(format!("display.fps_cap_max={}", cfg.fps_limit));
+            }
+            super::loader_launch::FpsCapCvar::Unsupported => {
+                #[cfg(target_os = "linux")]
+                {
+                    command.arg("--cvar");
+                    command.arg("display.vsync=false");
+                    let shim_dir = launcher_paths().clients_dir.join("fpscap");
+                    match super::loader_launch::stage_fps_shim(&shim_dir) {
+                        Ok(shim) => {
+                            command.env("LYNNCHER_FPS_CAP", cfg.fps_limit.to_string());
+                            command.env(
+                                "LYNNCHER_FPS_LOG",
+                                shim.with_file_name("fpscap.log"),
+                            );
+                            let existing = std::env::var("LD_PRELOAD").unwrap_or_default();
+                            let mut preload = shim.to_string_lossy().to_string();
+                            if !existing.trim().is_empty() {
+                                preload.push(':');
+                                preload.push_str(existing.trim());
+                            }
+                            command.env("LD_PRELOAD", preload);
+                        }
+                        Err(err) => {
+                            eprintln!("[launch] failed to stage fps shim: {err:#}");
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    eprintln!(
+                        "[launch] engine declares no numeric FPS cap cvar; cap {} not applied",
+                        cfg.fps_limit
+                    );
+                }
+            }
+        }
+    }
+
     if !cfg.extra_args.trim().is_empty() {
         let split_args = shell_words::split(cfg.extra_args.trim())
             .context("parsing extra arguments failed")?;
