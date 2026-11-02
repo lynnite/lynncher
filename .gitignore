@@ -33,3 +33,8 @@ config_override.toml
 .cookie/
 .cache/**
 
+# Build artifacts
+lynncher-linux-x86_64.deb
+lynncher-linux-x86_64.rpm
+lynncher-windows-x86_64.exe
+

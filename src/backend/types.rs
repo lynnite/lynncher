@@ -51,6 +51,10 @@ fn default_item_alpha() -> f32 {
     1.0
 }
 
+fn default_fps_limit() -> u32 {
+    0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackgroundImage {
     pub path: String,
@@ -208,6 +212,8 @@ pub struct LauncherConfig {
     pub forward_cursor_theme: bool,
     #[serde(default)]
     pub cursor_theme: String,
+    #[serde(default = "default_fps_limit")]
+    pub fps_limit: u32,
 }
 
 impl Default for LauncherConfig {
@@ -244,6 +250,7 @@ impl Default for LauncherConfig {
             text_shadow_color: TextShadowColor::default(),
             forward_cursor_theme: true,
             cursor_theme: String::new(),
+            fps_limit: 0,
         }
     }
 }

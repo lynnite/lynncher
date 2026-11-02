@@ -899,6 +899,10 @@ impl LauncherApp {
         let t_cursor_theme_auto = self.t("options.cursor_theme_auto", &[]);
         let t_cursor_theme = self.t("options.cursor_theme", &[]);
         let t_cursor_theme_hint = self.t("options.cursor_theme_hint", &[]);
+        let t_game_header = self.t("options.game_header", &[]);
+        let t_fps_limit = self.t("options.fps_limit", &[]);
+        let t_fps_limit_hint = self.t("options.fps_limit_hint", &[]);
+        let t_fps_limit_unlimited = self.t("options.fps_limit_unlimited", &[]);
         let t_color_scheme = self.t("options.color_scheme", &[]);
         let t_c_bg = self.t("options.color_background", &[]);
         let t_c_top = self.t("options.color_topbar", &[]);
@@ -1332,6 +1336,30 @@ impl LauncherApp {
                     .desired_width(220.0),
             );
             edit.on_hover_text(hint);
+        });
+
+        ui.add_space(6.0);
+        ui.label(&t_game_header);
+        ui.horizontal(|ui| {
+            ui.label(&t_fps_limit);
+            let mut fps = self.cfg.fps_limit;
+            let resp = ui.add(
+                egui::DragValue::new(&mut fps)
+                    .range(0..=1000)
+                    .speed(1)
+                    .custom_formatter(|n, _| {
+                        let v = n as u32;
+                        if v == 0 {
+                            t_fps_limit_unlimited.clone()
+                        } else {
+                            v.to_string()
+                        }
+                    }),
+            );
+            if resp.changed() {
+                self.cfg.fps_limit = fps;
+            }
+            resp.on_hover_text(&t_fps_limit_hint);
         });
 
         ui.separator();

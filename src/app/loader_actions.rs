@@ -151,6 +151,8 @@ impl LauncherApp {
             disable_signing,
             forward_cursor_theme: self.cfg.forward_cursor_theme,
             cursor_theme: Some(self.cfg.cursor_theme.clone()),
+            fps_limit: Some(self.cfg.fps_limit),
+            fps_shim_dir: Some(self.paths.clients_dir.join("fpscap")),
         };
 
         match launch_game_via_loader(&spec) {

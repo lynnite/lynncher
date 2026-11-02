@@ -1,9 +1,119 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 
 use super::display_path;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FpsCapCvar {
+    DisplayMaxFps,
+    FpsCapMax,
+    Unsupported,
+}
+
+pub fn detect_fps_cap_cvar(module_dirs: &[PathBuf], engine_zip: Option<&Path>) -> FpsCapCvar {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for dir in module_dirs {
+        candidates.push(dir.join("Robust.Shared.dll"));
+    }
+    if let Some(zip) = engine_zip {
+        if let Some(parent) = zip.parent() {
+            candidates.push(parent.join("extracted").join("Robust.Shared.dll"));
+            candidates.push(parent.join("Robust.Shared.dll"));
+        }
+    }
+
+    let assemblies: Vec<Vec<u8>> = candidates
+        .iter()
+        .filter_map(|p| std::fs::read(p).ok())
+        .collect();
+
+    if assemblies.is_empty() {
+        return FpsCapCvar::Unsupported;
+    }
+
+    let declares = |name: &str| assemblies.iter().any(|bytes| dll_contains_cvar(bytes, name));
+
+    if declares("display.max_fps") {
+        FpsCapCvar::DisplayMaxFps
+    } else if declares("display.fps_cap_max") {
+        FpsCapCvar::FpsCapMax
+    } else {
+        FpsCapCvar::Unsupported
+    }
+}
+
+fn dll_contains_cvar(bytes: &[u8], cvar: &str) -> bool {
+    let ascii = cvar.as_bytes();
+    let mut utf16: Vec<u8> = Vec::with_capacity(ascii.len() * 2);
+    for &b in ascii {
+        utf16.push(b);
+        utf16.push(0);
+    }
+    contains_subslice(bytes, &utf16) || contains_subslice(bytes, ascii)
+}
+
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+#[cfg(target_os = "linux")]
+static FPS_SHIM_BYTES: &[u8] = include_bytes!("../assets/fpscap/liblynncher_fpscap.so");
+
+#[cfg(target_os = "linux")]
+fn safe_shim_dir() -> PathBuf {
+    let path_has_space = |p: &Path| p.to_string_lossy().contains(char::is_whitespace);
+
+    if let Some(cache) = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from) {
+        if cache.is_absolute() && !path_has_space(&cache) {
+            return cache.join("lynncher-fpscap");
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        if home.is_absolute() {
+            let cache = home.join(".cache").join("lynncher-fpscap");
+            if !path_has_space(&cache) {
+                return cache;
+            }
+        }
+    }
+
+    let tmp = std::env::temp_dir();
+    if !path_has_space(&tmp) {
+        return tmp.join("lynncher-fpscap");
+    }
+
+    PathBuf::from("/tmp/lynncher-fpscap")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn stage_fps_shim(_hint_dir: &Path) -> Result<PathBuf> {
+    let dir = safe_shim_dir();
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating fps shim dir {}", display_path(&dir)))?;
+    let path = dir.join("liblynncher_fpscap.so");
+
+    if path.to_string_lossy().contains(char::is_whitespace) {
+        anyhow::bail!(
+            "no space-free directory available to stage the fps shim (got {})",
+            display_path(&path)
+        );
+    }
+
+    let needs_write = match std::fs::read(&path) {
+        Ok(existing) => existing != FPS_SHIM_BYTES,
+        Err(_) => true,
+    };
+    if needs_write {
+        std::fs::write(&path, FPS_SHIM_BYTES)
+            .with_context(|| format!("writing fps shim {}", display_path(&path)))?;
+    }
+    Ok(path)
+}
 
 fn valid_signature_hex(raw: &str) -> String {
     let cleaned: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
@@ -39,6 +149,8 @@ pub struct LoaderLaunchSpec {
     pub disable_signing: bool,
     pub forward_cursor_theme: bool,
     pub cursor_theme: Option<String>,
+    pub fps_limit: Option<u32>,
+    pub fps_shim_dir: Option<PathBuf>,
 }
 
 pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::Child> {
@@ -112,6 +224,69 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
     command.arg("--cvar");
     command.arg("launch.launcher=true");
 
+    let mut fps_shim_path: Option<PathBuf> = None;
+    if let Some(fps) = spec.fps_limit {
+        if fps > 0 {
+            let module_dirs: Vec<PathBuf> =
+                spec.modules.iter().map(|(_, p)| p.clone()).collect();
+            match detect_fps_cap_cvar(&module_dirs, Some(&spec.engine_zip)) {
+                FpsCapCvar::DisplayMaxFps => {
+                    command.arg("--cvar");
+                    command.arg("display.vsync=false");
+                    command.arg("--cvar");
+                    command.arg(format!("display.max_fps={fps}"));
+                }
+                FpsCapCvar::FpsCapMax => {
+                    command.arg("--cvar");
+                    command.arg("display.vsync=false");
+                    command.arg("--cvar");
+                    command.arg(format!("display.fps_cap_max={fps}"));
+                }
+                FpsCapCvar::Unsupported => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        command.arg("--cvar");
+                        command.arg("display.vsync=false");
+                        match spec.fps_shim_dir.as_deref() {
+                            Some(dir) => match stage_fps_shim(dir) {
+                                Ok(path) => {
+                                    command.env("LYNNCHER_FPS_CAP", fps.to_string());
+                                    command.env(
+                                        "LYNNCHER_FPS_LOG",
+                                        path.with_file_name("fpscap.log"),
+                                    );
+                                    fps_shim_path = Some(path);
+                                    eprintln!(
+                                        "[loader-launch] engine lacks a numeric FPS cap; \
+                                         applying external frame cap of {fps} fps via LD_PRELOAD shim"
+                                    );
+                                }
+                                Err(err) => {
+                                    eprintln!(
+                                        "[loader-launch] failed to stage fps shim: {err:#}"
+                                    );
+                                }
+                            },
+                            None => {
+                                eprintln!(
+                                    "[loader-launch] engine lacks a numeric FPS cap and no \
+                                     shim dir was provided; cap {fps} not applied"
+                                );
+                            }
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        eprintln!(
+                            "[loader-launch] engine declares no numeric FPS cap cvar \
+                             (display.max_fps/display.fps_cap_max); a cap of {fps} cannot be applied"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     for (name, value) in &spec.build_cvars {
         command.arg("--cvar");
         command.arg(format!("build.{name}={value}"));
@@ -145,7 +320,20 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
             }
             command.env("LD_LIBRARY_PATH", merged);
         }
+
+        if let Some(shim) = &fps_shim_path {
+            let existing = std::env::var("LD_PRELOAD").unwrap_or_default();
+            let mut preload = shim.to_string_lossy().to_string();
+            if !existing.trim().is_empty() {
+                preload.push(':');
+                preload.push_str(existing.trim());
+            }
+            command.env("LD_PRELOAD", preload);
+        }
     }
+
+    #[cfg(not(target_os = "linux"))]
+    let _ = &fps_shim_path;
 
     command.spawn().with_context(|| {
         format!(
@@ -153,4 +341,53 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
             display_path(spec.loader_exe.as_path())
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn utf16le(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for c in s.encode_utf16() {
+            out.extend_from_slice(&c.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn detects_display_max_fps_utf16() {
+        let mut bytes = b"header".to_vec();
+        bytes.extend_from_slice(&utf16le("display.max_fps"));
+        bytes.extend_from_slice(b"trailer");
+        assert!(dll_contains_cvar(&bytes, "display.max_fps"));
+    }
+
+    #[test]
+    fn detects_display_max_fps_ascii() {
+        let mut bytes = b"junk".to_vec();
+        bytes.extend_from_slice(b"display.max_fps");
+        assert!(dll_contains_cvar(&bytes, "display.max_fps"));
+    }
+
+    #[test]
+    fn does_not_confuse_fps_cap_max() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&utf16le("display.fps_cap_max"));
+        assert!(!dll_contains_cvar(&bytes, "display.max_fps"));
+        assert!(dll_contains_cvar(&bytes, "display.fps_cap_max"));
+    }
+
+    #[test]
+    fn absent_cvar_not_detected() {
+        let mut bytes = b"junk".to_vec();
+        bytes.extend_from_slice(&utf16le("display.vsync"));
+        assert!(!dll_contains_cvar(&bytes, "display.max_fps"));
+        assert!(!dll_contains_cvar(&bytes, "display.fps_cap_max"));
+    }
+
+    #[test]
+    fn empty_needle_is_false() {
+        assert!(!contains_subslice(b"anything", &[]));
+    }
 }
