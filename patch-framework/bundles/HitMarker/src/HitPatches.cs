@@ -3,6 +3,7 @@ using Content.Shared.Weapons.Melee;
 using HarmonyLib;
 using Robust.Shared.GameObjects;
 using Robust.Shared.Player;
+using XenoComponent = Content.Shared._RMC14.Xenonids.XenoComponent;
 
 namespace HitMarker;
 
@@ -18,6 +19,15 @@ internal static class HitPatches
             return null;
         _players ??= Robust.Shared.IoC.IoCManager.Resolve<Robust.Client.Player.IPlayerManager>();
         return _players?.LocalEntity;
+    }
+
+    private static bool IsXeno(EntityUid uid)
+    {
+        if (EntManager is null)
+            return false;
+        if (uid == EntityUid.Invalid || !EntManager.EntityExists(uid))
+            return false;
+        return EntManager.HasComponent<XenoComponent>(uid);
     }
 
     internal static void Apply(Harmony harmony)
@@ -104,6 +114,9 @@ internal static class HitPatches
             if (target == local.Value)
                 return;
 
+            if (!IsXeno(target))
+                return;
+
             var dmg = (int)Math.Round(comp.Damage?.GetTotal().Double() ?? 0d);
             HitEventBus.Publish(dmg);
             HitSoundPlayer.Play();
@@ -123,6 +136,22 @@ internal static class HitPatches
 
             var local = LocalPlayer();
             if (local is null || user != local)
+                return;
+
+            var hitXeno = false;
+            if (targets is not null)
+            {
+                foreach (var target in targets)
+                {
+                    if (IsXeno(target))
+                    {
+                        hitXeno = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hitXeno)
                 return;
 
             HitEventBus.Publish(0);
