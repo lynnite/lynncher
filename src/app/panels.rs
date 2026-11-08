@@ -903,6 +903,13 @@ impl LauncherApp {
         let t_fps_limit = self.t("options.fps_limit", &[]);
         let t_fps_limit_hint = self.t("options.fps_limit_hint", &[]);
         let t_fps_limit_unlimited = self.t("options.fps_limit_unlimited", &[]);
+        let t_net_header = self.t("options.net_header", &[]);
+        let t_net_latency = self.t("options.net_latency", &[]);
+        let t_net_jitter = self.t("options.net_jitter", &[]);
+        let t_net_loss = self.t("options.net_loss", &[]);
+        let t_net_dupes = self.t("options.net_dupes", &[]);
+        let t_net_hint = self.t("options.net_hint", &[]);
+        let t_net_off = self.t("options.net_off", &[]);
         let t_color_scheme = self.t("options.color_scheme", &[]);
         let t_c_bg = self.t("options.color_background", &[]);
         let t_c_top = self.t("options.color_topbar", &[]);
@@ -1362,6 +1369,68 @@ impl LauncherApp {
             resp.on_hover_text(&t_fps_limit_hint);
         });
 
+        ui.add_space(6.0);
+        ui.label(&t_net_header).on_hover_text(&t_net_hint);
+        ui.horizontal(|ui| {
+            ui.label(&t_net_latency);
+            let mut lat = self.cfg.sim_latency_ms;
+            let lresp = ui.add(
+                egui::DragValue::new(&mut lat)
+                    .range(0..=2000)
+                    .speed(1)
+                    .suffix(" ms")
+                    .custom_formatter(|n, _| {
+                        if n as u32 == 0 {
+                            t_net_off.clone()
+                        } else {
+                            format!("{:.0}", n)
+                        }
+                    }),
+            );
+            if lresp.changed() {
+                self.cfg.sim_latency_ms = lat;
+            }
+
+            ui.add_space(12.0);
+            ui.label(&t_net_jitter);
+            let mut jit = self.cfg.sim_jitter_ms;
+            let jresp = ui.add(
+                egui::DragValue::new(&mut jit)
+                    .range(0..=1000)
+                    .speed(1)
+                    .suffix(" ms"),
+            );
+            if jresp.changed() {
+                self.cfg.sim_jitter_ms = jit;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(&t_net_loss);
+            let mut loss = self.cfg.sim_loss_percent;
+            let loresp = ui.add(
+                egui::DragValue::new(&mut loss)
+                    .range(0..=100)
+                    .speed(1)
+                    .suffix(" %"),
+            );
+            if loresp.changed() {
+                self.cfg.sim_loss_percent = loss;
+            }
+
+            ui.add_space(12.0);
+            ui.label(&t_net_dupes);
+            let mut dup = self.cfg.sim_dupes_percent;
+            let dresp = ui.add(
+                egui::DragValue::new(&mut dup)
+                    .range(0..=100)
+                    .speed(1)
+                    .suffix(" %"),
+            );
+            if dresp.changed() {
+                self.cfg.sim_dupes_percent = dup;
+            }
+        });
+
         ui.separator();
         ui.separator();
         ui.label(t_color_scheme);
@@ -1418,6 +1487,10 @@ impl LauncherApp {
             }
         });
 
+        if self.extension_files.is_empty() {
+            ui.label(egui::RichText::new(self.t("options.extension_empty", &[])).small().weak());
+        }
+
         for ext in self.extension_files.clone() {
             ui.horizontal(|ui| {
                 let mut enabled = self.cfg.enabled_extensions.iter().any(|e| e == &ext);
@@ -1451,6 +1524,50 @@ impl LauncherApp {
                     }
                 }
             });
+        }
+
+        ui.separator();
+        let t_patching = self.t("options.patching", &[]);
+        let t_patching_enable = self.t("options.patching_enable", &[]);
+        let t_patching_enable_hint = self.t("options.patching_enable_hint", &[]);
+        let t_patching_level = self.t("options.patching_level", &[]);
+        let t_patching_level_engine = self.t("options.patching_level_engine", &[]);
+        let t_patching_level_full = self.t("options.patching_level_full", &[]);
+        ui.label(t_patching);
+        ui.checkbox(&mut self.cfg.patching_enabled, &t_patching_enable)
+            .on_hover_text(&t_patching_enable_hint);
+
+        ui.horizontal(|ui| {
+            ui.label(&t_patching_level);
+            let is_full = self.cfg.patching_level.eq_ignore_ascii_case("full");
+            let selected = if is_full {
+                &t_patching_level_full
+            } else {
+                &t_patching_level_engine
+            };
+            egui::ComboBox::from_id_salt("patching_level_combo")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(!is_full, &t_patching_level_engine)
+                        .clicked()
+                    {
+                        self.cfg.patching_level = "engine".to_string();
+                    }
+                    if ui
+                        .selectable_label(is_full, &t_patching_level_full)
+                        .clicked()
+                    {
+                        self.cfg.patching_level = "full".to_string();
+                    }
+                });
+        });
+        if self.cfg.patching_enabled {
+            ui.label(
+                egui::RichText::new(self.t("options.patching_loader_note", &[]))
+                    .small()
+                    .weak(),
+            );
         }
 
         ui.separator();

@@ -214,6 +214,22 @@ pub struct LauncherConfig {
     pub cursor_theme: String,
     #[serde(default = "default_fps_limit")]
     pub fps_limit: u32,
+    #[serde(default)]
+    pub sim_latency_ms: u32,
+    #[serde(default)]
+    pub sim_jitter_ms: u32,
+    #[serde(default)]
+    pub sim_loss_percent: u32,
+    #[serde(default)]
+    pub sim_dupes_percent: u32,
+    #[serde(default)]
+    pub patching_enabled: bool,
+    #[serde(default = "default_patching_level")]
+    pub patching_level: String,
+}
+
+fn default_patching_level() -> String {
+    String::from("engine")
 }
 
 impl Default for LauncherConfig {
@@ -251,6 +267,12 @@ impl Default for LauncherConfig {
             forward_cursor_theme: true,
             cursor_theme: String::new(),
             fps_limit: 0,
+            sim_latency_ms: 0,
+            sim_jitter_ms: 0,
+            sim_loss_percent: 0,
+            sim_dupes_percent: 0,
+            patching_enabled: false,
+            patching_level: default_patching_level(),
         }
     }
 }

@@ -10,6 +10,30 @@ use crate::backend::{
 
 use super::LauncherApp;
 
+pub(crate) fn resolve_patch_bundles(
+    paths: &crate::backend::LauncherPaths,
+    cfg: &crate::backend::LauncherConfig,
+) -> Vec<crate::backend::ResolvedBundle> {
+    if !cfg.patching_enabled || cfg.enabled_extensions.is_empty() {
+        return Vec::new();
+    }
+    match crate::backend::resolve_enabled_extensions(paths, &cfg.enabled_extensions) {
+        Ok(bundles) => {
+            if !bundles.is_empty() {
+                eprintln!(
+                    "[patch] resolved {} client-side bundle(s) for launch",
+                    bundles.len()
+                );
+            }
+            bundles
+        }
+        Err(err) => {
+            eprintln!("[patch] failed to resolve enabled extensions: {err:#}");
+            Vec::new()
+        }
+    }
+}
+
 impl LauncherApp {
     pub(crate) fn apply_flat_style(&mut self, ctx: &egui::Context) {
         let cs = self.cfg.color_scheme.clone();

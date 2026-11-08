@@ -65,17 +65,20 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 static FPS_SHIM_BYTES: &[u8] = include_bytes!("../assets/fpscap/liblynncher_fpscap.so");
 
 #[cfg(target_os = "linux")]
-fn safe_shim_dir() -> PathBuf {
+static NETSIM_SHIM_BYTES: &[u8] = include_bytes!("../assets/netsim/liblynncher_netsim.so");
+
+#[cfg(target_os = "linux")]
+fn safe_shim_dir(subdir: &str) -> PathBuf {
     let path_has_space = |p: &Path| p.to_string_lossy().contains(char::is_whitespace);
 
     if let Some(cache) = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from) {
         if cache.is_absolute() && !path_has_space(&cache) {
-            return cache.join("lynncher-fpscap");
+            return cache.join(subdir);
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         if home.is_absolute() {
-            let cache = home.join(".cache").join("lynncher-fpscap");
+            let cache = home.join(".cache").join(subdir);
             if !path_has_space(&cache) {
                 return cache;
             }
@@ -84,35 +87,107 @@ fn safe_shim_dir() -> PathBuf {
 
     let tmp = std::env::temp_dir();
     if !path_has_space(&tmp) {
-        return tmp.join("lynncher-fpscap");
+        return tmp.join(subdir);
     }
 
-    PathBuf::from("/tmp/lynncher-fpscap")
+    PathBuf::from("/tmp").join(subdir)
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn stage_fps_shim(_hint_dir: &Path) -> Result<PathBuf> {
-    let dir = safe_shim_dir();
+fn stage_shim(bytes: &[u8], subdir: &str, filename: &str, label: &str) -> Result<PathBuf> {
+    let dir = safe_shim_dir(subdir);
     std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating fps shim dir {}", display_path(&dir)))?;
-    let path = dir.join("liblynncher_fpscap.so");
+        .with_context(|| format!("creating {label} shim dir {}", display_path(&dir)))?;
+    let path = dir.join(filename);
 
     if path.to_string_lossy().contains(char::is_whitespace) {
         anyhow::bail!(
-            "no space-free directory available to stage the fps shim (got {})",
+            "no space-free directory available to stage the {label} shim (got {})",
             display_path(&path)
         );
     }
 
     let needs_write = match std::fs::read(&path) {
-        Ok(existing) => existing != FPS_SHIM_BYTES,
+        Ok(existing) => existing != bytes,
         Err(_) => true,
     };
     if needs_write {
-        std::fs::write(&path, FPS_SHIM_BYTES)
-            .with_context(|| format!("writing fps shim {}", display_path(&path)))?;
+        std::fs::write(&path, bytes)
+            .with_context(|| format!("writing {label} shim {}", display_path(&path)))?;
     }
     Ok(path)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn stage_fps_shim(_hint_dir: &Path) -> Result<PathBuf> {
+    stage_shim(FPS_SHIM_BYTES, "lynncher-fpscap", "liblynncher_fpscap.so", "fps")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn stage_netsim_shim() -> Result<PathBuf> {
+    stage_shim(
+        NETSIM_SHIM_BYTES,
+        "lynncher-netsim",
+        "liblynncher_netsim.so",
+        "netsim",
+    )
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NetSim {
+    pub latency_ms: u32,
+    pub jitter_ms: u32,
+    pub loss_percent: u32,
+    pub dupes_percent: u32,
+}
+
+impl NetSim {
+    pub fn is_active(&self) -> bool {
+        self.latency_ms > 0
+            || self.jitter_ms > 0
+            || self.loss_percent > 0
+            || self.dupes_percent > 0
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn apply_netsim_env(command: &mut Command, sim: &NetSim) -> Option<PathBuf> {
+    if !sim.is_active() {
+        return None;
+    }
+    match stage_netsim_shim() {
+        Ok(path) => {
+            command.env("LYNNCHER_NETSIM_MS", sim.latency_ms.to_string());
+            command.env("LYNNCHER_NETSIM_JITTER_MS", sim.jitter_ms.to_string());
+            command.env("LYNNCHER_NETSIM_LOSS", sim.loss_percent.to_string());
+            command.env("LYNNCHER_NETSIM_DUPES", sim.dupes_percent.to_string());
+            command.env(
+                "LYNNCHER_NETSIM_LOG",
+                path.with_file_name("netsim.log"),
+            );
+            eprintln!(
+                "[netsim] applying symmetric {}+{}ms jitter, {}% loss, {}% dupes via LD_PRELOAD shim",
+                sim.latency_ms, sim.jitter_ms, sim.loss_percent, sim.dupes_percent
+            );
+            Some(path)
+        }
+        Err(err) => {
+            eprintln!("[netsim] failed to stage net-sim shim: {err:#}");
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn apply_netsim_env(_command: &mut Command, sim: &NetSim) -> Option<PathBuf> {
+    if sim.is_active() {
+        eprintln!(
+            "[netsim] symmetric network simulation is Linux-only; \
+             {}ms latency / {}% loss / {}% dupes not applied",
+            sim.latency_ms, sim.loss_percent, sim.dupes_percent
+        );
+    }
+    None
 }
 
 fn valid_signature_hex(raw: &str) -> String {
@@ -152,6 +227,10 @@ pub struct LoaderLaunchSpec {
     pub fps_limit: Option<u32>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fps_shim_dir: Option<PathBuf>,
+    pub net_sim: NetSim,
+    pub patching_enabled: bool,
+    pub patching_level: String,
+    pub patch_bundles: Vec<super::ResolvedBundle>,
 }
 
 pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::Child> {
@@ -190,6 +269,44 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
     for (module_name, module_path) in &spec.modules {
         let safe = module_name.to_uppercase().replace('.', "_");
         command.env(format!("ROBUST_MODULE_{safe}"), module_path);
+    }
+
+    if spec.patching_enabled && !spec.patch_bundles.is_empty() {
+        if !super::loader::loader_supports_patching(&spec.loader_exe) {
+            anyhow::bail!(
+                "client-side patching is enabled but the installed SS14.Loader does not ship \
+                 the patch framework ({}). Install a patch-capable loader or turn patching off.",
+                super::loader::PATCH_FRAMEWORK_ASSEMBLY
+            );
+        }
+
+        let level = if spec.patching_level.eq_ignore_ascii_case("full") {
+            "full"
+        } else {
+            "engine"
+        };
+        command.env("LYNNCHER_PATCHING", "1");
+        command.env("LYNNCHER_PATCH_LEVEL", level);
+
+        let bundles: Vec<serde_json::Value> = spec
+            .patch_bundles
+            .iter()
+            .map(|b| {
+                serde_json::json!({
+                    "name": b.name,
+                    "root": b.root.to_string_lossy(),
+                    "assembly": b.assembly.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    "resources": b.resources.as_ref().map(|p| p.to_string_lossy().to_string()),
+                })
+            })
+            .collect();
+        if let Ok(json) = serde_json::to_string(&bundles) {
+            command.env("LYNNCHER_PATCH_BUNDLES", json);
+        }
+        eprintln!(
+            "[loader-launch] patching enabled ({level}); exporting {} client-side bundle(s)",
+            spec.patch_bundles.len()
+        );
     }
 
     if disable_signing {
@@ -289,6 +406,8 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
         }
     }
 
+    let netsim_shim_path: Option<PathBuf> = apply_netsim_env(&mut command, &spec.net_sim);
+
     for (name, value) in &spec.build_cvars {
         command.arg("--cvar");
         command.arg(format!("build.{name}={value}"));
@@ -323,9 +442,16 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
             command.env("LD_LIBRARY_PATH", merged);
         }
 
+        let mut preload_parts: Vec<String> = Vec::new();
         if let Some(shim) = &fps_shim_path {
+            preload_parts.push(shim.to_string_lossy().to_string());
+        }
+        if let Some(shim) = &netsim_shim_path {
+            preload_parts.push(shim.to_string_lossy().to_string());
+        }
+        if !preload_parts.is_empty() {
             let existing = std::env::var("LD_PRELOAD").unwrap_or_default();
-            let mut preload = shim.to_string_lossy().to_string();
+            let mut preload = preload_parts.join(":");
             if !existing.trim().is_empty() {
                 preload.push(':');
                 preload.push_str(existing.trim());
@@ -335,7 +461,7 @@ pub fn launch_game_via_loader(spec: &LoaderLaunchSpec) -> Result<std::process::C
     }
 
     #[cfg(not(target_os = "linux"))]
-    let _ = &fps_shim_path;
+    let _ = (&fps_shim_path, &netsim_shim_path);
 
     command.spawn().with_context(|| {
         format!(
@@ -391,5 +517,19 @@ mod tests {
     #[test]
     fn empty_needle_is_false() {
         assert!(!contains_subslice(b"anything", &[]));
+    }
+
+    #[test]
+    fn netsim_disabled_when_all_zero() {
+        assert!(!NetSim::default().is_active());
+    }
+
+    #[test]
+    fn netsim_active_when_any_field_set() {
+        let base = NetSim::default();
+        assert!(NetSim { latency_ms: 1, ..base }.is_active());
+        assert!(NetSim { jitter_ms: 1, ..base }.is_active());
+        assert!(NetSim { loss_percent: 1, ..base }.is_active());
+        assert!(NetSim { dupes_percent: 1, ..base }.is_active());
     }
 }
