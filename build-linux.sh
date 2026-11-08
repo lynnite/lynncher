@@ -4,6 +4,18 @@ set -e
 cd "$(dirname "$0")"
 
 echo "[build-linux] Building release binary..."
+
+if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+    CC=$(command -v gcc || command -v cc)
+    echo "[build-linux] Building native shims with $CC..."
+    $CC -O2 -Wall -Wextra -shared -fPIC \
+        -o src/assets/fpscap/liblynncher_fpscap.so src/assets/fpscap/fpscap.c -ldl -lpthread
+    $CC -O2 -Wall -Wextra -shared -fPIC \
+        -o src/assets/netsim/liblynncher_netsim.so src/assets/netsim/lynncher_netsim.c -ldl -lpthread
+else
+    echo "[build-linux] warning: no C compiler found; using committed shim .so files." >&2
+fi
+
 cargo build --release
 
 VERSION=$(grep -E '^version' Cargo.toml | head -n1 | sed -E 's/.*= *"([^"]+)".*/\1/')
@@ -44,4 +56,3 @@ fi
 cp "$DEB" "$ASSET_NAME"
 echo "[build-linux] Built $DEB (also copied to $ASSET_NAME)"
 echo "[build-linux] Done."
-

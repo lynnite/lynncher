@@ -51,11 +51,14 @@ pub use download::{
     is_connection_cancelled,
     stage_sdl3_native_runtime,
 };
-pub use extensions::{list_sideloaded_extensions, remove_sideloaded_extension, sideload_extension_bundle};
+pub use extensions::{
+    inspect_extensions, list_sideloaded_extensions, remove_sideloaded_extension,
+    resolve_enabled_extensions, sideload_extension_bundle, ExtensionInfo, ResolvedBundle,
+};
 pub use hwid::*;
 pub use launch::launch_game_with_context;
-pub use loader::ensure_loader_installed;
-pub use loader_launch::{launch_game_via_loader, LoaderLaunchSpec};
+pub use loader::{ensure_loader_installed, loader_supports_patching, LoaderInstall, PATCH_FRAMEWORK_ASSEMBLY};
+pub use loader_launch::{launch_game_via_loader, LoaderLaunchSpec, NetSim};
 pub use content_db::{build_content_database, ContentDbEntry};
 pub use types::{
     AccountProfile,
@@ -75,5 +78,4 @@ pub use types::{
 
 pub(crate) use common::{app_data_name, display_path};
 pub(crate) use types::{APP_DATA_NAME, APP_VENDOR_DIR, CONFIG_FILE_NAME, SS14_DEFAULT_PORT};
-
 

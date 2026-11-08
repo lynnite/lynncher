@@ -153,6 +153,15 @@ impl LauncherApp {
             cursor_theme: Some(self.cfg.cursor_theme.clone()),
             fps_limit: Some(self.cfg.fps_limit),
             fps_shim_dir: Some(self.paths.clients_dir.join("fpscap")),
+            net_sim: crate::backend::NetSim {
+                latency_ms: self.cfg.sim_latency_ms,
+                jitter_ms: self.cfg.sim_jitter_ms,
+                loss_percent: self.cfg.sim_loss_percent,
+                dupes_percent: self.cfg.sim_dupes_percent,
+            },
+            patching_enabled: self.cfg.patching_enabled,
+            patching_level: self.cfg.patching_level.clone(),
+            patch_bundles: super::actions::resolve_patch_bundles(&self.paths, &self.cfg),
         };
 
         match launch_game_via_loader(&spec) {

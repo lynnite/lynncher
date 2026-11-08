@@ -12,9 +12,116 @@ use super::{display_path, LauncherPaths};
 const LAUNCHER_RELEASES_URL: &str =
     "https://api.github.com/repos/space-wizards/SS14.Launcher/releases/latest";
 
+pub const PATCH_FRAMEWORK_ASSEMBLY: &str = "Lynncher.Patches.dll";
+
+pub const PATCH_HARMONY_ASSEMBLY: &str = "0Harmony.dll";
+
+fn stage_patch_framework(loader_dir: &Path) {
+    if loader_dir.join(PATCH_FRAMEWORK_ASSEMBLY).is_file()
+        && loader_dir.join(PATCH_HARMONY_ASSEMBLY).is_file()
+    {
+        return;
+    }
+
+    let Some(src_dir) = bundled_loader_src_dir() else {
+        return;
+    };
+    let src_loader = src_dir.join("loader");
+
+    for name in [PATCH_FRAMEWORK_ASSEMBLY, PATCH_HARMONY_ASSEMBLY] {
+        let src = src_loader.join(name);
+        let dst = loader_dir.join(name);
+        if src.is_file() && !dst.is_file() {
+            let _ = fs::copy(&src, &dst);
+        }
+    }
+}
+
+fn stage_patch_capable_loader(loader_dir: &Path, loader_exe: &Path) {
+    if loader_supports_patching(loader_exe) {
+        return;
+    }
+
+    let Some(src_dir) = bundled_loader_src_dir() else {
+        return;
+    };
+    let src_loader = src_dir.join("loader");
+
+    let bundled_exe = src_loader.join(
+        loader_exe
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("SS14.Loader")),
+    );
+    if !loader_supports_patching(&bundled_exe) {
+        return;
+    }
+
+    for name in [
+        "SS14.Loader.dll",
+        "SS14.Loader.deps.json",
+        "SS14.Loader.runtimeconfig.json",
+    ] {
+        let src = src_loader.join(name);
+        if src.is_file() {
+            let _ = fs::copy(&src, loader_dir.join(name));
+        }
+    }
+
+    if bundled_exe.is_file() {
+        let _ = fs::copy(&bundled_exe, loader_exe);
+        fix_loader_permissions(loader_exe);
+    }
+}
+
 pub struct LoaderInstall {
     pub loader_exe: PathBuf,
     pub signing_key: PathBuf,
+}
+
+impl LoaderInstall {
+    pub fn supports_patching(&self) -> bool {
+        loader_supports_patching(&self.loader_exe)
+    }
+}
+
+pub fn loader_supports_patching(loader_exe: &Path) -> bool {
+    let Some(dir) = loader_exe.parent() else {
+        return false;
+    };
+
+    if !dir.join(PATCH_FRAMEWORK_ASSEMBLY).is_file() {
+        return false;
+    }
+
+    let mut candidates: Vec<PathBuf> = vec![loader_exe.to_path_buf()];
+    if let Some(name) = loader_exe.file_name() {
+        let mut managed_name = name.to_os_string();
+        if let Some(stem) = managed_name.to_str().and_then(|n| n.strip_suffix(".exe")) {
+            managed_name = stem.into();
+        }
+        managed_name.push(".dll");
+        let managed = dir.join(managed_name);
+        if managed != loader_exe {
+            candidates.push(managed);
+        }
+    }
+
+    const NEEDLE: &[u8] =
+        b"L\x00y\x00n\x00n\x00c\x00h\x00e\x00r\x00.\x00P\x00a\x00t\x00c\x00h\x00e\x00s\x00";
+    const ASCII: &[u8] = b"Lynncher.Patches";
+
+    candidates.iter().any(|path| {
+        std::fs::read(path)
+            .map(|bytes| byte_contains(&bytes, NEEDLE) || byte_contains(&bytes, ASCII))
+            .unwrap_or(false)
+    })
+}
+
+fn byte_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -> Result<LoaderInstall> {
@@ -29,6 +136,8 @@ pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -
     };
 
     if loader_exe.exists() && signing_key.exists() {
+        stage_patch_capable_loader(&loader_dir, &loader_exe);
+        stage_patch_framework(&loader_dir);
         return Ok(LoaderInstall {
             loader_exe,
             signing_key,
@@ -44,6 +153,7 @@ pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -
             && signing_key.exists()
         {
             fix_loader_permissions(&loader_exe);
+            stage_patch_framework(&loader_dir);
             return Ok(LoaderInstall {
                 loader_exe,
                 signing_key,
@@ -115,6 +225,8 @@ pub fn ensure_loader_installed(paths: &LauncherPaths, proxy_url: Option<&str>) -
             signing_key.exists()
         );
     }
+
+    stage_patch_framework(&loader_dir);
 
     Ok(LoaderInstall {
         loader_exe,
@@ -311,4 +423,81 @@ fn fetch_latest_release(client: &reqwest::blocking::Client) -> Result<GithubRele
     response
         .json::<GithubRelease>()
         .context("parsing GitHub release JSON")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        static C: AtomicU64 = AtomicU64::new(0);
+        let n = C.fetch_add(1, Ordering::SeqCst);
+        let d = std::env::temp_dir().join(format!("lynncher-loader-test-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn fake_loader(dir: &Path, embed_name: bool) -> PathBuf {
+        let exe = dir.join("SS14.Loader");
+        let mut bytes = b"MZ".to_vec();
+        if embed_name {
+            for c in "Lynncher.Patches".encode_utf16() {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        std::fs::write(&exe, bytes).unwrap();
+        exe
+    }
+
+    #[test]
+    fn patching_unsupported_without_framework_dll() {
+        let dir = unique_dir("nodll");
+        let exe = fake_loader(&dir, true);
+        assert!(!loader_supports_patching(&exe));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patching_unsupported_when_loader_lacks_embedded_name() {
+        let dir = unique_dir("stock");
+        let exe = fake_loader(&dir, false);
+        std::fs::write(dir.join(PATCH_FRAMEWORK_ASSEMBLY), b"x").unwrap();
+        assert!(!loader_supports_patching(&exe));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patching_supported_when_both_present() {
+        let dir = unique_dir("both");
+        let exe = fake_loader(&dir, true);
+        std::fs::write(dir.join(PATCH_FRAMEWORK_ASSEMBLY), b"x").unwrap();
+        assert!(loader_supports_patching(&exe));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patching_supported_when_name_is_in_managed_dll() {
+        let dir = unique_dir("manageddll");
+        let exe = fake_loader(&dir, false);
+
+        let mut dll_bytes = b"MZ".to_vec();
+        for c in "Lynncher.Patches".encode_utf16() {
+            dll_bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        std::fs::write(dir.join("SS14.Loader.dll"), dll_bytes).unwrap();
+        std::fs::write(dir.join(PATCH_FRAMEWORK_ASSEMBLY), b"x").unwrap();
+
+        assert!(loader_supports_patching(&exe));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patching_unsupported_for_missing_loader() {
+        let dir = unique_dir("missing");
+        let exe = dir.join("does-not-exist");
+        assert!(!loader_supports_patching(&exe));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -58,6 +58,15 @@ pub fn launch_game_with_context(
         Command::new(&executable)
     };
 
+    #[allow(unused_mut)]
+    let mut preload_shims: Vec<PathBuf> = Vec::new();
+    let net_sim = super::loader_launch::NetSim {
+        latency_ms: cfg.sim_latency_ms,
+        jitter_ms: cfg.sim_jitter_ms,
+        loss_percent: cfg.sim_loss_percent,
+        dupes_percent: cfg.sim_dupes_percent,
+    };
+
     if cfg.forward_cursor_theme {
         super::apply_cursor_env_with_override(&mut command, Some(&cfg.cursor_theme));
     }
@@ -147,13 +156,7 @@ pub fn launch_game_with_context(
                                 "LYNNCHER_FPS_LOG",
                                 shim.with_file_name("fpscap.log"),
                             );
-                            let existing = std::env::var("LD_PRELOAD").unwrap_or_default();
-                            let mut preload = shim.to_string_lossy().to_string();
-                            if !existing.trim().is_empty() {
-                                preload.push(':');
-                                preload.push_str(existing.trim());
-                            }
-                            command.env("LD_PRELOAD", preload);
+                            preload_shims.push(shim);
                         }
                         Err(err) => {
                             eprintln!("[launch] failed to stage fps shim: {err:#}");
@@ -229,6 +232,24 @@ pub fn launch_game_with_context(
         ensure_sdl3_linux_aliases(executable.parent())?;
         ensure_glfw_linux_aliases(executable.parent())?;
         ensure_glfw_module_aliases(executable.parent())?;
+    }
+
+    if let Some(shim) = super::loader_launch::apply_netsim_env(&mut command, &net_sim) {
+        preload_shims.push(shim);
+    }
+
+    if !preload_shims.is_empty() {
+        let existing = std::env::var("LD_PRELOAD").unwrap_or_default();
+        let mut preload = preload_shims
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join(":");
+        if !existing.trim().is_empty() {
+            preload.push(':');
+            preload.push_str(existing.trim());
+        }
+        command.env("LD_PRELOAD", preload);
     }
 
     let child = command.spawn().with_context(|| {

@@ -38,3 +38,14 @@ lynncher-linux-x86_64.deb
 lynncher-linux-x86_64.rpm
 lynncher-windows-x86_64.exe
 
+
+/patch-framework/**/bin/
+/patch-framework/**/obj/
+/patch-framework/bundles/_out/
+/loader/bin_x64/loader/Lynncher.Patches.dll
+/loader/bin_x64/loader/0Harmony.dll
+
+/RMC-14/
+/SanabiLauncher/
+/ExampleMarseyPatch/
+
