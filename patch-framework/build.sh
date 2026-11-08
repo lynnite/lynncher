@@ -74,6 +74,7 @@ build_bundle() {
 }
 
 build_bundle "HitMarker" "bundles/HitMarker/src/HitMarker.csproj"
+build_bundle "HealthBars" "bundles/HealthBars/src/HealthBars.csproj"
 
 LOADER_DLL="$LOADER_DIR/SS14.Loader.dll"
 if [[ -f "$LOADER_DLL" ]] && grep -qa "Lynncher.Patches" "$LOADER_DLL"; then

@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>HealthBars</AssemblyName>
+    <RootNamespace>HealthBars</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ClientPath Condition="'$(ClientPath)' == ''">$(RMCPath)</ClientPath>
+    <ClientBin>$(ClientPath)/bin/Content.Client</ClientBin>
+  </PropertyGroup>
+
+  <Target Name="CheckClientAssemblies" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(ClientPath)' == ''"
+           Text="Set ClientPath to a game build (a directory containing bin/Content.Client). Example: dotnet build -c Release -p:ClientPath=/path/to/RMC-14" />
+    <Error Condition="!Exists('$(ClientBin)/Content.Client.dll')"
+           Text="Could not find Content.Client.dll under '$(ClientBin)'. Point ClientPath at a built game client (RMC-14)." />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.4.3" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Content.Client">
+      <HintPath>$(ClientBin)/Content.Client.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Content.Shared">
+      <HintPath>$(ClientBin)/Content.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Robust.Client">
+      <HintPath>$(ClientBin)/Robust.Client.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Robust.Shared">
+      <HintPath>$(ClientBin)/Robust.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Robust.Shared.Maths">
+      <HintPath>$(ClientBin)/Robust.Shared.Maths.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
